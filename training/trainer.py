@@ -61,8 +61,8 @@ class trainer:
             self.mse = self.mse.cuda()
             torch.cuda.manual_seed(config.random_seed)
             if config.n_gpu==1:
-                self.G = torch.nn.DataParallel(self.G).cuda(device=0)
-                self.D = torch.nn.DataParallel(self.D).cuda(device=0)
+                self.G = self.G.cuda(device=0)
+                self.D = self.D.cuda(device=0)
             else:
                 gpus = []
                 for i in range(config.n_gpu):
@@ -128,8 +128,7 @@ class trainer:
                     self.fadein['gen'].update_alpha(d_alpha)
                     self.complete['gen'] = self.fadein['gen'].alpha*100
                 self.flag_flush_gen = False
-                self.G.module.flush_network()   # flush G
-                print(self.G.module.model)
+                self.G.flush_network()   # flush G
                 #self.Gs.module.flush_network()         # flush Gs
                 self.fadein['gen'] = None
                 self.complete['gen'] = 0.0
@@ -139,8 +138,7 @@ class trainer:
                     self.fadein['dis'].update_alpha(d_alpha)
                     self.complete['dis'] = self.fadein['dis'].alpha*100
                 self.flag_flush_dis = False
-                self.D.module.flush_network()   # flush and,
-                print(self.D.module.model)
+                self.D.flush_network()   # flush and,
                 self.fadein['dis'] = None
                 self.complete['dis'] = 0.0
                 if floor(self.resl) < self.max_resl and self.phase != 'final':
@@ -150,6 +148,7 @@ class trainer:
             if floor(self.resl) != prev_resl and floor(self.resl)<self.max_resl+1:
                 self.lr = self.lr * float(self.config.lr_decay)
                 self.G.grow_network(floor(self.resl))
+                print(self.G)
                 #self.Gs.grow_network(floor(self.resl))
                 self.D.grow_network(floor(self.resl))
                 self.renew_everything()
@@ -314,14 +313,14 @@ class trainer:
         if target == 'gen':
             state = {
                 'resl' : self.resl,
-                'state_dict' : self.G.module.state_dict(),
+                'state_dict' : self.G.model.state_dict(),
                 'optimizer' : self.opt_g.state_dict(),
             }
             return state
         elif target == 'dis':
             state = {
                 'resl' : self.resl,
-                'state_dict' : self.D.module.state_dict(),
+                'state_dict' : self.D.model.state_dict(),
                 'optimizer' : self.opt_d.state_dict(),
             }
             return state
@@ -331,14 +330,14 @@ class trainer:
         if target == 'gen':
             state = {
                 'resl' : self.resl,
-                'state_dict' : self.G.module.state_dict(),
+                'state_dict' : self.G.model.state_dict(),
                 'optimizer' : self.opt_g.state_dict(),
             }
             return state
         elif target == 'dis':
             state = {
                 'resl' : self.resl,
-                'state_dict' : self.D.module.state_dict(),
+                'state_dict' : self.D.model.state_dict(),
                 'optimizer' : self.opt_d.state_dict(),
             }
             return state
