@@ -29,7 +29,8 @@ class SatImageDataset(Dataset):
     self.transform = transform
     zooms = [d for d in os.listdir(self.root_dir) if os.path.isdir(os.path.join(self.root_dir, d))]
     self.samples = []
-    for zoom in zooms[:1]:
+    # TODO do all zooms
+    for zoom in zooms:
       zoom_path = os.path.join(self.root_dir, zoom)
       for file_name in tqdm(os.listdir(zoom_path)):
         if file_name[-4:] == '.txt':
@@ -50,7 +51,7 @@ class SatImageDataset(Dataset):
     image = pil_loader(self.samples[idx][0])
     with open(self.samples[idx][1]) as f:
       meta = f.read().split(',')
-      meta = [float(x) for x in meta]
+      meta = torch.FloatTensor([float(x) for x in meta])
 
     if self.transform:
       image = self.transform(image)

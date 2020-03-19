@@ -29,11 +29,12 @@ def conv(layers, c_in, c_out, k_size, stride=1, pad=0, leaky=True, bn=False, wn=
         if pixel:   layers.append(pixelwise_norm_layer())
     return layers
 
-def linear(layers, c_in, c_out, sig=True, wn=False):
+def linear(layers, c_in, c_out, sig=True, wn=False, relu=False):
     layers.append(Flatten())
     if wn:      layers.append(equalized_linear(c_in, c_out))
     else:       layers.append(Linear(c_in, c_out))
     if sig:     layers.append(nn.Sigmoid())
+    elif sig:     layers.append(nn.ReLU())
     return layers
 
     
@@ -76,14 +77,20 @@ class Generator(nn.Module):
         self.ngf = config.ngf
         self.layer_name = None
         self.module_names = []
+        self.encoder = self.make_encoder()
         self.model = self.get_init_gen()
+
+    def make_encoder(self):
+        layers = []
+        ndim = self.ngf
+        layers = linear(layers, self.nz, ndim, sig=False, wn=self.flag_wn, relu=True)
+        #layers = linear(layers, ndim, ndim, sig=False, wn=self.flag_wn, relu=True)
+        return  nn.Sequential(*layers)
 
     def first_block(self):
         layers = []
         ndim = self.ngf
-        if self.flag_norm_latent:
-            layers.append(pixelwise_norm_layer())
-        layers = deconv(layers, self.nz, ndim, 4, 1, 3, self.flag_leaky, self.flag_bn, self.flag_wn, self.flag_pixelwise)
+        layers = deconv(layers, ndim, ndim, 4, 1, 3, self.flag_leaky, self.flag_bn, self.flag_wn, self.flag_pixelwise)
         layers = deconv(layers, ndim, ndim, 3, 1, 1, self.flag_leaky, self.flag_bn, self.flag_wn, self.flag_pixelwise)
         return  nn.Sequential(*layers), ndim
 
@@ -177,9 +184,10 @@ class Generator(nn.Module):
         for param in self.model.parameters():
             param.requires_grad = False
 
-    def forward(self, x):
-        x = self.model(x.view(x.size(0), -1, 1, 1))
-        return x
+    def forward(self, z):
+        z = self.encoder(z)
+        z = self.model(z.view(z.size(0), -1, 1, 1))
+        return z
 
 
 class Discriminator(nn.Module):
@@ -197,6 +205,8 @@ class Discriminator(nn.Module):
         self.layer_name = None
         self.module_names = []
         self.model = self.get_init_dis()
+        self.encoder = self.make_encoder()
+        self.classifier = self.make_classifier()
 
     def last_block(self):
         # add minibatch_std_concat_layer later.
@@ -205,9 +215,23 @@ class Discriminator(nn.Module):
         layers.append(minibatch_std_concat_layer())
         layers = conv(layers, ndim+1, ndim, 3, 1, 1, self.flag_leaky, self.flag_bn, self.flag_wn, pixel=False)
         layers = conv(layers, ndim, ndim, 4, 1, 0, self.flag_leaky, self.flag_bn, self.flag_wn, pixel=False)
+        layers = linear(layers, ndim, ndim, sig=False, wn=self.flag_wn, relu=True)
+        return nn.Sequential(*layers), ndim
+
+    def make_encoder(self):
+        layers = []
+        ndim = self.ndf
+        layers = linear(layers, self.nz, ndim, sig=False, wn=self.flag_wn, relu=True)
+        return nn.Sequential(*layers)
+
+    def make_classifier(self):
+        layers = []
+        ndim = self.ndf
+        layers = linear(layers, ndim*2, ndim, sig=False, wn=self.flag_wn, relu=True)
         layers = linear(layers, ndim, 1, sig=self.flag_sigmoid, wn=self.flag_wn)
-        return  nn.Sequential(*layers), ndim
-    
+        return nn.Sequential(*layers)
+      
+
     def intermediate_block(self, resl):
         halving = False
         layer_name = 'intermediate_{}x{}_{}x{}'.format(int(pow(2,resl)), int(pow(2,resl)), int(pow(2, resl-1)), int(pow(2, resl-1)))
@@ -302,8 +326,11 @@ class Discriminator(nn.Module):
         for param in self.model.parameters():
             param.requires_grad = False
 
-    def forward(self, x):
+    def forward(self, x, z):
         x = self.model(x)
+        y = self.encoder(z)
+        x = torch.cat((x, y), dim=1)
+        x = self.classifier(x)
         return x
 
  

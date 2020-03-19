@@ -241,8 +241,12 @@ class trainer:
         if self.use_cuda:
             self.z_test = self.z_test.cuda()
         self.z_test = Variable(self.z_test, volatile=True)
-        self.z_test.data.resize_(self.loader.batchsize, self.nz).normal_(0.0, 1.0)
-        
+        self.z_test.data.resize_(self.loader.batchsize, self.nz).uniform_(-90.0, 90.0)
+        #self.z_test[:,0] == 90*self.z_test[:,0]
+        self.z_test[:,1] = torch.mul(self.z_test[:,1], 2)
+        self.z_test[:,2] = torch.floor(torch.remainder(self.z_test[:,2], 7)).add(1)
+        np.savetxt('z_test.txt', self.z_test.cpu().numpy())
+
         for step in range(2, self.max_resl+1+5):
             for iter in tqdm(range(0,(self.trns_tick*2+self.stab_tick*2)*self.TICK, self.loader.batchsize)):
                 self.globalIter = self.globalIter+1
@@ -259,21 +263,23 @@ class trainer:
                 self.D.zero_grad()
 
                 # update discriminator.
-                self.x.data = self.feed_interpolated_input(self.loader.get_batch())
+                batch = self.loader.get_batch()
+                self.x.data = self.feed_interpolated_input(batch['image'])
                 if self.flag_add_noise:
                     self.x = self.add_noise(self.x)
-                self.z.data.resize_(self.loader.batchsize, self.nz).normal_(0.0, 1.0)
+                self.z.data = batch['meta'].cuda()
+                #self.z = self.z.data.resize_(self.loader.batchsize, self.nz).normal_(0.0, 1.0)
                 self.x_tilde = self.G(self.z)
                
-                self.fx = self.D(self.x)
-                self.fx_tilde = self.D(self.x_tilde.detach())
+                self.fx = self.D(self.x, self.z)
+                self.fx_tilde = self.D(self.x_tilde.detach(), self.z)
 
                 loss_d = self.mse(self.fx.squeeze(), self.real_label) + self.mse(self.fx_tilde, self.fake_label)
                 loss_d.backward()
                 self.opt_d.step()
 
                 # update generator.
-                fx_tilde = self.D(self.x_tilde)
+                fx_tilde = self.D(self.x_tilde, self.z)
                 loss_g = self.mse(fx_tilde.squeeze(), self.real_label.detach())
                 loss_g.backward()
                 self.opt_g.step()
