@@ -40,7 +40,7 @@ try:
 except FileExistsError as e:
   pass
 
-for i in trange(10*(4**zoom)):
+for i in trange(max(8192, 10*(4**zoom))):
   file_name = directory + str(i)
   if path.exists(file_name + '.txt'):
     continue
