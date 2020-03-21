@@ -74,25 +74,33 @@ class Generator(nn.Module):
         self.flag_norm_latent = config.flag_norm_latent
         self.nc = config.nc
         self.nz = config.nz
+        self.ni = config.ni
         self.ngf = config.ngf
         self.layer_name = None
         self.module_names = []
         self.encoder = self.make_encoder()
+        self.noise_mixer = self.make_noise_mixer()
         self.model = self.get_init_gen()
 
     def make_encoder(self):
         layers = []
         ndim = self.ngf
-        layers = linear(layers, self.nz, ndim, sig=False, wn=self.flag_wn, relu=True)
+        layers = linear(layers, self.ni, ndim, sig=False, wn=self.flag_wn, relu=True)
         #layers = linear(layers, ndim, ndim, sig=False, wn=self.flag_wn, relu=True)
-        return  nn.Sequential(*layers)
+        return nn.Sequential(*layers)
+
+    def make_noise_mixer(self):
+        layers = []
+        ndim = self.ngf
+        layers = linear(layers, ndim*2, ndim, sig=False, wn=self.flag_wn, relu=True)
+        return nn.Sequential(*layers)
 
     def first_block(self):
         layers = []
         ndim = self.ngf
         layers = deconv(layers, ndim, ndim, 4, 1, 3, self.flag_leaky, self.flag_bn, self.flag_wn, self.flag_pixelwise)
         layers = deconv(layers, ndim, ndim, 3, 1, 1, self.flag_leaky, self.flag_bn, self.flag_wn, self.flag_pixelwise)
-        return  nn.Sequential(*layers), ndim
+        return nn.Sequential(*layers), ndim
 
     def intermediate_block(self, resl):
         halving = False
@@ -114,8 +122,8 @@ class Generator(nn.Module):
         else:
             layers = deconv(layers, ndim, ndim, 3, 1, 1, self.flag_leaky, self.flag_bn, self.flag_wn, self.flag_pixelwise)
             layers = deconv(layers, ndim, ndim, 3, 1, 1, self.flag_leaky, self.flag_bn, self.flag_wn, self.flag_pixelwise)
-        return  nn.Sequential(*layers), ndim, layer_name
-    
+        return nn.Sequential(*layers), ndim, layer_name
+
     def to_rgb_block(self, c_in):
         layers = []
         layers = deconv(layers, c_in, self.nc, 1, 1, 0, self.flag_leaky, self.flag_bn, self.flag_wn, self.flag_pixelwise, only=True)
@@ -184,10 +192,12 @@ class Generator(nn.Module):
         for param in self.model.parameters():
             param.requires_grad = False
 
-    def forward(self, z):
-        z = self.encoder(z)
-        z = self.model(z.view(z.size(0), -1, 1, 1))
-        return z
+    def forward(self, z, coord):
+        x = self.encoder(coord)
+        x = torch.cat((z, x), dim=1)
+        x = self.noise_mixer(x)
+        x = self.model(x.view(x.size(0), -1, 1, 1))
+        return x
 
 
 class Discriminator(nn.Module):
@@ -200,6 +210,7 @@ class Discriminator(nn.Module):
         self.flag_leaky = config.flag_leaky
         self.flag_sigmoid = config.flag_sigmoid
         self.nz = config.nz
+        self.ni = config.ni
         self.nc = config.nc
         self.ndf = config.ndf
         self.layer_name = None
@@ -212,8 +223,7 @@ class Discriminator(nn.Module):
         # add minibatch_std_concat_layer later.
         ndim = self.ndf
         layers = []
-        layers.append(minibatch_std_concat_layer())
-        layers = conv(layers, ndim+1, ndim, 3, 1, 1, self.flag_leaky, self.flag_bn, self.flag_wn, pixel=False)
+        layers = conv(layers, ndim, ndim, 3, 1, 1, self.flag_leaky, self.flag_bn, self.flag_wn, pixel=False)
         layers = conv(layers, ndim, ndim, 4, 1, 0, self.flag_leaky, self.flag_bn, self.flag_wn, pixel=False)
         layers = linear(layers, ndim, ndim, sig=False, wn=self.flag_wn, relu=True)
         return nn.Sequential(*layers), ndim
@@ -221,13 +231,20 @@ class Discriminator(nn.Module):
     def make_encoder(self):
         layers = []
         ndim = self.ndf
-        layers = linear(layers, self.nz, ndim, sig=False, wn=self.flag_wn, relu=True)
+        layers = linear(layers, self.ni, ndim, sig=False, wn=self.flag_wn, relu=True)
         return nn.Sequential(*layers)
 
     def make_classifier(self):
         layers = []
         ndim = self.ndf
+        layers = linear(layers, ndim + self.ni, ndim, sig=False, wn=self.flag_wn, relu=True)
+        layers = linear(layers, ndim, ndim, sig=False, wn=self.flag_wn, relu=True)
+        layers = linear(layers, ndim, ndim, sig=False, wn=self.flag_wn, relu=True)
+        layers = linear(layers, ndim, ndim, sig=False, wn=self.flag_wn, relu=True)
+        layers.append(minibatch_std_concat_layer(averaging='none'))
         layers = linear(layers, ndim*2, ndim, sig=False, wn=self.flag_wn, relu=True)
+        layers = linear(layers, ndim, ndim, sig=False, wn=self.flag_wn, relu=True)
+        layers = linear(layers, ndim, ndim, sig=False, wn=self.flag_wn, relu=True)
         layers = linear(layers, ndim, 1, sig=self.flag_sigmoid, wn=self.flag_wn)
         return nn.Sequential(*layers)
       
@@ -328,8 +345,8 @@ class Discriminator(nn.Module):
 
     def forward(self, x, z):
         x = self.model(x)
-        y = self.encoder(z)
-        x = torch.cat((x, y), dim=1)
+        #y = self.encoder(z)
+        x = torch.cat((x, z), dim=1)
         x = self.classifier(x)
         return x
 

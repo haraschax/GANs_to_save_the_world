@@ -26,6 +26,7 @@ class trainer:
             torch.set_default_tensor_type('torch.FloatTensor')
 
         self.nz = config.nz
+        self.ni = config.ni
         self.optimizer = config.optimizer
 
         self.resl = 2           # we start from 2^2 = 4
@@ -170,6 +171,7 @@ class trainer:
         
         # define tensors
         self.z = torch.FloatTensor(self.loader.batchsize, self.nz)
+        self.coord = torch.FloatTensor(self.loader.batchsize, self.ni)
         self.x = torch.FloatTensor(self.loader.batchsize, 3, self.loader.imsize, self.loader.imsize)
         self.x_tilde = torch.FloatTensor(self.loader.batchsize, 3, self.loader.imsize, self.loader.imsize)
         self.real_label = torch.FloatTensor(self.loader.batchsize).fill_(1)
@@ -178,6 +180,7 @@ class trainer:
         # enable cuda
         if self.use_cuda:
             self.z = self.z.cuda()
+            self.coord = self.coord.cuda()
             self.x = self.x.cuda()
             self.x_tilde = self.x.cuda()
             self.real_label = self.real_label.cuda()
@@ -188,6 +191,7 @@ class trainer:
         self.x = Variable(self.x)
         self.x_tilde = Variable(self.x_tilde)
         self.z = Variable(self.z)
+        self.coord = Variable(self.coord)
         self.real_label = Variable(self.real_label)
         self.fake_label = Variable(self.fake_label)
         
@@ -235,17 +239,33 @@ class trainer:
         z = Variable(torch.from_numpy(z)).cuda() if self.use_cuda else Variable(torch.from_numpy(z))
         return x + z
 
+    def add_loc_noise(self, x):
+        # TODO: support more method of adding noise.
+        if self.flag_add_noise==False:
+            return x
+
+        strength = 0.5
+        z = np.random.randn(*x.size()).astype(np.float32) * strength
+        z[:,2] = 0
+        z = Variable(torch.from_numpy(z)).cuda() if self.use_cuda else Variable(torch.from_numpy(z))
+        return x + z
+
     def train(self):
         # noise for test.
         self.z_test = torch.FloatTensor(self.loader.batchsize, self.nz)
         if self.use_cuda:
             self.z_test = self.z_test.cuda()
         self.z_test = Variable(self.z_test, volatile=True)
-        self.z_test.data.resize_(self.loader.batchsize, self.nz).uniform_(-90.0, 90.0)
-        #self.z_test[:,0] == 90*self.z_test[:,0]
-        self.z_test[:,1] = torch.mul(self.z_test[:,1], 2)
-        self.z_test[:,2] = torch.floor(torch.remainder(self.z_test[:,2], 7)).add(1)
-        np.savetxt('z_test.txt', self.z_test.cpu().numpy())
+        self.z_test.data.resize_(self.loader.batchsize, self.nz).uniform_(-1.0, 1.0)
+
+        self.coord_test = torch.FloatTensor(self.loader.batchsize, self.ni)
+        if self.use_cuda:
+            self.coord_test = self.coord_test.cuda()
+        self.coord_test = Variable(self.coord_test, volatile=True)
+        self.coord_test.data.resize_(self.loader.batchsize, self.ni).uniform_(-90.0, 90.0)
+        self.coord_test[:,1] = torch.mul(self.coord_test[:,1], 2)
+        self.coord_test[:,2] = torch.floor(torch.remainder(self.coord_test[:,2], 7)).add(1)
+        np.savetxt('repo/coord_test.txt', self.coord_test.cpu().numpy())
 
         for step in range(2, self.max_resl+1+5):
             for iter in tqdm(range(0,(self.trns_tick*2+self.stab_tick*2)*self.TICK, self.loader.batchsize)):
@@ -264,22 +284,24 @@ class trainer:
 
                 # update discriminator.
                 batch = self.loader.get_batch()
+                self.coord.data = batch['meta'].cuda()
                 self.x.data = self.feed_interpolated_input(batch['image'])
                 if self.flag_add_noise:
                     self.x = self.add_noise(self.x)
-                self.z.data = batch['meta'].cuda()
-                #self.z = self.z.data.resize_(self.loader.batchsize, self.nz).normal_(0.0, 1.0)
-                self.x_tilde = self.G(self.z)
-               
-                self.fx = self.D(self.x, self.z)
-                self.fx_tilde = self.D(self.x_tilde.detach(), self.z)
+                self.fx = self.D(self.x, self.coord)
+
+                batch = self.loader.get_batch()
+                self.coord.data = batch['meta'].cuda()
+                self.z = self.z.data.resize_(self.loader.batchsize, self.nz).normal_(0.0, 1.0)
+                self.x_tilde = self.G(self.z, self.coord)
+                self.fx_tilde = self.D(self.x_tilde.detach(), self.coord)
 
                 loss_d = self.mse(self.fx.squeeze(), self.real_label) + self.mse(self.fx_tilde, self.fake_label)
                 loss_d.backward()
                 self.opt_d.step()
 
                 # update generator.
-                fx_tilde = self.D(self.x_tilde, self.z)
+                fx_tilde = self.D(self.x_tilde, self.coord)
                 loss_g = self.mse(fx_tilde.squeeze(), self.real_label.detach())
                 loss_g.backward()
                 self.opt_g.step()
@@ -291,10 +313,12 @@ class trainer:
                 # save model.
                 self.snapshot('repo/model')
 
+
+                print(self.coord_test)
                 # save image grid.
                 if self.globalIter%self.config.save_img_every == 0:
                     with torch.no_grad():
-                        x_test = self.G(self.z_test)
+                        x_test = self.G(self.z_test, self.coord_test)
                     utils.mkdir('repo/save/grid')
                     utils.save_image_grid(x_test.data, 'repo/save/grid/{}_{}_G{}_D{}.jpg'.format(int(self.globalIter/self.config.save_img_every), self.phase, self.complete['gen'], self.complete['dis']))
                     utils.mkdir('repo/save/resl_{}'.format(int(floor(self.resl))))
@@ -304,7 +328,7 @@ class trainer:
                 # tensorboard visualization.
                 if self.use_tb:
                     with torch.no_grad():
-                        x_test = self.G(self.z_test)
+                        x_test = self.G(self.z_test, self.coord_test)
                     self.tb.add_scalar('data/loss_g', loss_g.item(), self.globalIter)
                     self.tb.add_scalar('data/loss_d', loss_d.item(), self.globalIter)
                     self.tb.add_scalar('tick/lr', self.lr, self.globalIter)
@@ -319,31 +343,14 @@ class trainer:
         if target == 'gen':
             state = {
                 'resl' : self.resl,
-                'state_dict' : self.G.model.state_dict(),
+                'state_dict' : self.G.state_dict(),
                 'optimizer' : self.opt_g.state_dict(),
             }
             return state
         elif target == 'dis':
             state = {
                 'resl' : self.resl,
-                'state_dict' : self.D.model.state_dict(),
-                'optimizer' : self.opt_d.state_dict(),
-            }
-            return state
-
-
-    def get_state(self, target):
-        if target == 'gen':
-            state = {
-                'resl' : self.resl,
-                'state_dict' : self.G.model.state_dict(),
-                'optimizer' : self.opt_g.state_dict(),
-            }
-            return state
-        elif target == 'dis':
-            state = {
-                'resl' : self.resl,
-                'state_dict' : self.D.model.state_dict(),
+                'state_dict' : self.D.state_dict(),
                 'optimizer' : self.opt_d.state_dict(),
             }
             return state
