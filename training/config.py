@@ -11,7 +11,7 @@ parser.add_argument('--random_seed', type=int, default=int(time.time()))
 parser.add_argument('--n_gpu', type=int, default=1)             # for Multi-GPU training.
 
 ## training parameters.
-parser.add_argument('--lr', type=float, default=0.0003)          # learning rate.
+parser.add_argument('--lr', type=float, default=0.001)          # learning rate.
 parser.add_argument('--lr_decay', type=float, default=0.87)     # learning rate decay at every resolution transition.
 parser.add_argument('--eps_drift', type=float, default=0.0001)   # coeff for the drift loss.
 parser.add_argument('--smoothing', type=float, default=0.997)   # smoothing factor for smoothed generator.

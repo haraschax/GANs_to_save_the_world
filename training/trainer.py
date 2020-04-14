@@ -58,6 +58,7 @@ class trainer:
         print ('Discriminator structure: ')
         print(self.D.model)
         self.mse = torch.nn.MSELoss()
+        self.mae = torch.nn.L1Loss()
         if self.use_cuda:
             self.mse = self.mse.cuda()
             torch.cuda.manual_seed(config.random_seed)
@@ -258,14 +259,15 @@ class trainer:
         self.z_test = Variable(self.z_test, volatile=True)
         self.z_test.data.resize_(self.loader.batchsize, self.nz).uniform_(-1.0, 1.0)
 
-        self.coord_test = torch.FloatTensor(self.loader.batchsize, self.ni)
+        #self.coord_test = torch.FloatTensor(self.loader.batchsize, self.ni)
+        #self.coord_test = Variable(self.coord_test, volatile=True)
+        #self.coord_test.data.resize_(self.loader.batchsize, self.ni).uniform_(-90.0, 90.0)
+        #self.coord_test[:,1] = torch.mul(self.coord_test[:,1], 2)
+        #self.coord_test[:,2] = torch.floor(torch.remainder(self.coord_test[:,2], 7)).add(1)
+        #np.savetxt('repo/coord_test.txt', self.coord_test.cpu().numpy())
+        self.coord_test = torch.FloatTensor(np.loadtxt('coord_test.txt'))
         if self.use_cuda:
             self.coord_test = self.coord_test.cuda()
-        self.coord_test = Variable(self.coord_test, volatile=True)
-        self.coord_test.data.resize_(self.loader.batchsize, self.ni).uniform_(-90.0, 90.0)
-        self.coord_test[:,1] = torch.mul(self.coord_test[:,1], 2)
-        self.coord_test[:,2] = torch.floor(torch.remainder(self.coord_test[:,2], 7)).add(1)
-        np.savetxt('repo/coord_test.txt', self.coord_test.cpu().numpy())
 
         for step in range(2, self.max_resl+1+5):
             for iter in tqdm(range(0,(self.trns_tick*2+self.stab_tick*2)*self.TICK, self.loader.batchsize)):
@@ -290,8 +292,9 @@ class trainer:
                     self.x = self.add_noise(self.x)
                 self.fx = self.D(self.x, self.coord)
 
-                batch = self.loader.get_batch()
-                self.coord.data = batch['meta'].cuda()
+                #batch = self.loader.get_batch()
+                #self.coord.data = batch['meta'].cuda()
+                #self.x.data = self.feed_interpolated_input(batch['image'])
                 self.z = self.z.data.resize_(self.loader.batchsize, self.nz).normal_(0.0, 1.0)
                 self.x_tilde = self.G(self.z, self.coord)
                 self.fx_tilde = self.D(self.x_tilde.detach(), self.coord)
@@ -302,7 +305,7 @@ class trainer:
 
                 # update generator.
                 fx_tilde = self.D(self.x_tilde, self.coord)
-                loss_g = self.mse(fx_tilde.squeeze(), self.real_label.detach())
+                loss_g = self.mse(fx_tilde.squeeze(), self.real_label.detach())  # + self.mae(self.x, self.x_tilde)
                 loss_g.backward()
                 self.opt_g.step()
                 
@@ -314,7 +317,6 @@ class trainer:
                 self.snapshot('repo/model')
 
 
-                print(self.coord_test)
                 # save image grid.
                 if self.globalIter%self.config.save_img_every == 0:
                     with torch.no_grad():

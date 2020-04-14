@@ -86,6 +86,11 @@ class Generator(nn.Module):
         layers = []
         ndim = self.ngf
         layers = linear(layers, self.ni, ndim, sig=False, wn=self.flag_wn, relu=True)
+        #layers = linear(layers, ndim, ndim*2, sig=False, wn=self.flag_wn, relu=True)
+        #layers = linear(layers, ndim*2, ndim*2, sig=False, wn=self.flag_wn, relu=True)
+        #layers = linear(layers, ndim*2, ndim*2, sig=False, wn=self.flag_wn, relu=True)
+        #layers = linear(layers, ndim*2, ndim*2, sig=False, wn=self.flag_wn, relu=True)
+        #layers = linear(layers, ndim*2, ndim, sig=False, wn=self.flag_wn, relu=True)
         #layers = linear(layers, ndim, ndim, sig=False, wn=self.flag_wn, relu=True)
         return nn.Sequential(*layers)
 
@@ -237,14 +242,14 @@ class Discriminator(nn.Module):
     def make_classifier(self):
         layers = []
         ndim = self.ndf
-        layers = linear(layers, ndim + self.ni, ndim, sig=False, wn=self.flag_wn, relu=True)
-        layers = linear(layers, ndim, ndim, sig=False, wn=self.flag_wn, relu=True)
-        layers = linear(layers, ndim, ndim, sig=False, wn=self.flag_wn, relu=True)
-        layers = linear(layers, ndim, ndim, sig=False, wn=self.flag_wn, relu=True)
+        #layers = linear(layers, ndim, ndim*2, sig=False, wn=self.flag_wn, relu=True)
+        #layers = linear(layers, ndim*2, ndim*2, sig=False, wn=self.flag_wn, relu=True)
+        #layers = linear(layers, ndim*2, ndim*2, sig=False, wn=self.flag_wn, relu=True)
+        #layers = linear(layers, ndim*2, ndim, sig=False, wn=self.flag_wn, relu=True)
         layers.append(minibatch_std_concat_layer(averaging='none'))
+        #layers = linear(layers, ndim*2, ndim*2, sig=False, wn=self.flag_wn, relu=True)
+        #layers = linear(layers, ndim*2, ndim*2, sig=False, wn=self.flag_wn, relu=True)
         layers = linear(layers, ndim*2, ndim, sig=False, wn=self.flag_wn, relu=True)
-        layers = linear(layers, ndim, ndim, sig=False, wn=self.flag_wn, relu=True)
-        layers = linear(layers, ndim, ndim, sig=False, wn=self.flag_wn, relu=True)
         layers = linear(layers, ndim, 1, sig=self.flag_sigmoid, wn=self.flag_wn)
         return nn.Sequential(*layers)
       
@@ -346,7 +351,7 @@ class Discriminator(nn.Module):
     def forward(self, x, z):
         x = self.model(x)
         #y = self.encoder(z)
-        x = torch.cat((x, z), dim=1)
+        #x = torch.cat((x, z), dim=1)
         x = self.classifier(x)
         return x
 
