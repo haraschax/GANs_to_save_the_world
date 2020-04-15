@@ -29,7 +29,7 @@ class trainer:
         self.ni = config.ni
         self.optimizer = config.optimizer
 
-        self.resl = 2           # we start from 2^2 = 4
+        self.resl = 7           # we start from 2^2 = 4
         self.lr = config.lr
         self.eps_drift = config.eps_drift
         self.smoothing = config.smoothing
@@ -81,87 +81,6 @@ class trainer:
         if self.use_tb:
             self.tb = tensorboard.tf_recorder()
 
-
-    def resl_scheduler(self):
-        '''
-        this function will schedule image resolution(self.resl) progressively.
-        it should be called every iteration to ensure resl value is updated properly.
-        step 1. (trns_tick) --> transition in generator.
-        step 2. (stab_tick) --> stabilize.
-        step 3. (trns_tick) --> transition in discriminator.
-        step 4. (stab_tick) --> stabilize.
-        '''
-        if floor(self.resl) != 2:
-            self.trns_tick = self.config.trns_tick
-            self.stab_tick = self.config.stab_tick
-        
-        self.batchsize = self.loader.batchsize
-        delta = 1.0/(2*self.trns_tick+2*self.stab_tick)
-        d_alpha = 1.0*self.batchsize/self.trns_tick/self.TICK
-
-        # update alpha if fade-in layer exist.
-        if self.fadein['gen'] is not None:
-            if self.resl%1.0 < (self.trns_tick)*delta:
-                self.fadein['gen'].update_alpha(d_alpha)
-                self.complete['gen'] = self.fadein['gen'].alpha*100
-                self.phase = 'gtrns'
-            elif self.resl%1.0 >= (self.trns_tick)*delta and self.resl%1.0 < (self.trns_tick+self.stab_tick)*delta:
-                self.phase = 'gstab'
-        if self.fadein['dis'] is not None:
-            if self.resl%1.0 >= (self.trns_tick+self.stab_tick)*delta and self.resl%1.0 < (self.stab_tick + self.trns_tick*2)*delta:
-                self.fadein['dis'].update_alpha(d_alpha)
-                self.complete['dis'] = self.fadein['dis'].alpha*100
-                self.phase = 'dtrns'
-            elif self.resl%1.0 >= (self.stab_tick + self.trns_tick*2)*delta and self.phase!='final':
-                self.phase = 'dstab'
-            
-        prev_kimgs = self.kimgs
-        self.kimgs = self.kimgs + self.batchsize
-        if (self.kimgs%self.TICK) < (prev_kimgs%self.TICK):
-            self.globalTick = self.globalTick + 1
-            # increase linearly every tick, and grow network structure.
-            prev_resl = floor(self.resl)
-            self.resl = self.resl + delta
-            self.resl = max(2, min(10.5, self.resl))        # clamping, range: 4 ~ 1024
-
-            # flush network.
-            if self.flag_flush_gen and self.resl%1.0 >= (self.trns_tick+self.stab_tick)*delta and prev_resl!=2:
-                if self.fadein['gen'] is not None:
-                    self.fadein['gen'].update_alpha(d_alpha)
-                    self.complete['gen'] = self.fadein['gen'].alpha*100
-                self.flag_flush_gen = False
-                self.G.flush_network()   # flush G
-                #self.Gs.module.flush_network()         # flush Gs
-                self.fadein['gen'] = None
-                self.complete['gen'] = 0.0
-                self.phase = 'dtrns'
-            elif self.flag_flush_dis and floor(self.resl) != prev_resl and prev_resl!=2:
-                if self.fadein['dis'] is not None:
-                    self.fadein['dis'].update_alpha(d_alpha)
-                    self.complete['dis'] = self.fadein['dis'].alpha*100
-                self.flag_flush_dis = False
-                self.D.flush_network()   # flush and,
-                self.fadein['dis'] = None
-                self.complete['dis'] = 0.0
-                if floor(self.resl) < self.max_resl and self.phase != 'final':
-                    self.phase = 'gtrns'
-
-            # grow network.
-            if floor(self.resl) != prev_resl and floor(self.resl)<self.max_resl+1:
-                self.lr = self.lr * float(self.config.lr_decay)
-                self.G.grow_network(floor(self.resl))
-                print(self.G)
-                #self.Gs.grow_network(floor(self.resl))
-                self.D.grow_network(floor(self.resl))
-                self.renew_everything()
-                self.fadein['gen'] = dict(self.G.model.named_children())['fadein_block']
-                self.fadein['dis'] = dict(self.D.model.named_children())['fadein_block']
-                self.flag_flush_gen = True
-                self.flag_flush_dis = True
-
-            if floor(self.resl) >= self.max_resl and self.resl%1.0 >= (self.stab_tick + self.trns_tick*2)*delta:
-                self.phase = 'final'
-                self.resl = self.max_resl + (self.stab_tick + self.trns_tick*2)*delta
 
 
             
@@ -253,11 +172,11 @@ class trainer:
 
     def train(self):
         # noise for test.
-        self.z_test = torch.FloatTensor(self.loader.batchsize, self.nz)
+        self.z_test = torch.FloatTensor(32, self.nz)
         if self.use_cuda:
             self.z_test = self.z_test.cuda()
         self.z_test = Variable(self.z_test, volatile=True)
-        self.z_test.data.resize_(self.loader.batchsize, self.nz).uniform_(-1.0, 1.0)
+        self.z_test.data.resize_(32, self.nz).uniform_(-1.0, 1.0)
 
         #self.coord_test = torch.FloatTensor(self.loader.batchsize, self.ni)
         #self.coord_test = Variable(self.coord_test, volatile=True)
@@ -266,80 +185,83 @@ class trainer:
         #self.coord_test[:,2] = torch.floor(torch.remainder(self.coord_test[:,2], 7)).add(1)
         #np.savetxt('repo/coord_test.txt', self.coord_test.cpu().numpy())
         self.coord_test = torch.FloatTensor(np.loadtxt('coord_test.txt'))
+        self.coord_test[:,0] = self.coord_test[:,0]/90.0
+        self.coord_test[:,1] = self.coord_test[:,1]/180.0
+        self.coord_test[:,2] = self.coord_test[:,2]/3.0 - 1.0
         if self.use_cuda:
             self.coord_test = self.coord_test.cuda()
 
-        for step in range(2, self.max_resl+1+5):
-            for iter in tqdm(range(0,(self.trns_tick*2+self.stab_tick*2)*self.TICK, self.loader.batchsize)):
+        g_losses = []
+        for epoch in range(5000): #True: #step in range(2, self.max_resl+1+5):
+            for step in range(128):
                 self.globalIter = self.globalIter+1
-                self.stack = self.stack + self.loader.batchsize
-                if self.stack > ceil(len(self.loader.dataset)):
-                    self.epoch = self.epoch + 1
-                    self.stack = int(self.stack%(ceil(len(self.loader.dataset))))
 
-                # reslolution scheduler.
-                self.resl_scheduler()
-                
                 # zero gradients.
                 self.G.zero_grad()
                 self.D.zero_grad()
 
                 # update discriminator.
-                batch = self.loader.get_batch()
-                self.coord.data = batch['meta'].cuda()
-                self.x.data = self.feed_interpolated_input(batch['image'])
-                if self.flag_add_noise:
-                    self.x = self.add_noise(self.x)
-                self.fx = self.D(self.x, self.coord)
-
                 #batch = self.loader.get_batch()
                 #self.coord.data = batch['meta'].cuda()
+                #self.coord[:,0] = self.coord[:,0]/90.0
+                #self.coord[:,1] = self.coord[:,1]/180.0
+                #self.coord[:,2] = self.coord[:,2]/3.0 - 1.0
                 #self.x.data = self.feed_interpolated_input(batch['image'])
+                #if self.flag_add_noise:
+                #    self.x = self.add_noise(self.x)
+                #self.fx = self.D(self.x, self.coord)
+
+                batch = self.loader.get_batch()
+                self.coord.data = batch['meta'].cuda()
+                self.coord[:,0] = self.coord[:,0]/90.0
+                self.coord[:,1] = self.coord[:,1]/180.0
+                self.coord[:,2] = self.coord[:,2]/3.0 - 1.0
+                self.x.data = self.feed_interpolated_input(batch['image'])
                 self.z = self.z.data.resize_(self.loader.batchsize, self.nz).normal_(0.0, 1.0)
                 self.x_tilde = self.G(self.z, self.coord)
-                self.fx_tilde = self.D(self.x_tilde.detach(), self.coord)
+                #self.fx_tilde = self.D(self.x_tilde.detach(), self.coord)
 
-                loss_d = self.mse(self.fx.squeeze(), self.real_label) + self.mse(self.fx_tilde, self.fake_label)
-                loss_d.backward()
-                self.opt_d.step()
+                #loss_d = self.mse(self.fx.squeeze(), self.real_label) + self.mse(self.fx_tilde, self.fake_label)
+                #loss_d.backward()
+                #self.opt_d.step()
 
                 # update generator.
-                fx_tilde = self.D(self.x_tilde, self.coord)
-                loss_g = self.mse(fx_tilde.squeeze(), self.real_label.detach())  # + self.mae(self.x, self.x_tilde)
+                #fx_tilde = self.D(self.x_tilde, self.coord)
+                #loss_g = self.mse(fx_tilde.squeeze(), self.real_label.detach())   + self.mae(self.x, self.x_tilde)
+                loss_g = self.mae(self.x, self.x_tilde)
                 loss_g.backward()
                 self.opt_g.step()
                 
                 # logging.
-                log_msg = ' [E:{0}][T:{1}][{2:6}/{3:6}]  errD: {4:.4f} | errG: {5:.4f} | [lr:{11:.5f}][cur:{6:.3f}][resl:{7:4}][{8}][{9:.1f}%][{10:.1f}%]'.format(self.epoch, self.globalTick, self.stack, len(self.loader.dataset), loss_d.item(), loss_g.item(), self.resl, int(pow(2,floor(self.resl))), self.phase, self.complete['gen'], self.complete['dis'], self.lr)
+                log_msg = ' [E:{0}][T:{1}][{2:6}/{3:6}]  errD: {4:.4f} | errG: {5:.4f} | {5:.5f}]'.format(epoch, step, step, 128, 0, loss_g.item(), self.lr)
                 tqdm.write(log_msg)
 
-                # save model.
-                self.snapshot('repo/model')
-
-
-                # save image grid.
-                if self.globalIter%self.config.save_img_every == 0:
-                    with torch.no_grad():
-                        x_test = self.G(self.z_test, self.coord_test)
-                    utils.mkdir('repo/save/grid')
-                    utils.save_image_grid(x_test.data, 'repo/save/grid/{}_{}_G{}_D{}.jpg'.format(int(self.globalIter/self.config.save_img_every), self.phase, self.complete['gen'], self.complete['dis']))
-                    utils.mkdir('repo/save/resl_{}'.format(int(floor(self.resl))))
-                    utils.save_image_single(x_test.data, 'repo/save/resl_{}/{}_{}_G{}_D{}.jpg'.format(int(floor(self.resl)),int(self.globalIter/self.config.save_img_every), self.phase, self.complete['gen'], self.complete['dis']))
-
-
-                # tensorboard visualization.
                 if self.use_tb:
-                    with torch.no_grad():
-                        x_test = self.G(self.z_test, self.coord_test)
-                    self.tb.add_scalar('data/loss_g', loss_g.item(), self.globalIter)
-                    self.tb.add_scalar('data/loss_d', loss_d.item(), self.globalIter)
-                    self.tb.add_scalar('tick/lr', self.lr, self.globalIter)
-                    self.tb.add_scalar('tick/cur_resl', int(pow(2,floor(self.resl))), self.globalIter)
-                    '''IMAGE GRID
-                    self.tb.add_image_grid('grid/x_test', 4, utils.adjust_dyn_range(x_test.data.float(), [-1,1], [0,1]), self.globalIter)
-                    self.tb.add_image_grid('grid/x_tilde', 4, utils.adjust_dyn_range(self.x_tilde.data.float(), [-1,1], [0,1]), self.globalIter)
-                    self.tb.add_image_grid('grid/x_intp', 4, utils.adjust_dyn_range(self.x.data.float(), [-1,1], [0,1]), self.globalIter)
-                    '''
+                    self.tb.add_scalar('data/loss_g', loss_g.item(), epoch*128 + step)
+                g_losses.append(loss_g.item())
+
+            # save model.
+            self.snapshot('repo/model')
+
+
+            # save image grid.
+            with torch.no_grad():
+                x_test = self.G(self.z_test, self.coord_test)
+            utils.mkdir('repo/save/grid')
+            utils.save_image_grid(x_test.data, 'repo/save/grid/epoch_{}.jpg'.format(epoch))
+
+
+            # tensorboard visualization.
+            if self.use_tb:
+                with torch.no_grad():
+                    x_test = self.G(self.z_test, self.coord_test)
+                self.tb.add_scalar('data/loss_g_epoch', np.mean(g_losses), epoch)
+                g_losses = []
+                #self.tb.add_scalar('data/loss_d', 0, self.globalIter)
+                #self.tb.add_scalar('tick/lr', self.lr, self.globalIter)
+                #self.tb.add_scalar('tick/cur_resl', int(pow(2,floor(self.resl))), self.globalIter)
+                #IMAGE GRID
+                self.tb.add_image_grid('grid/x_test', 4, utils.adjust_dyn_range(x_test.data.float(), [-1,1], [0,1]), epoch)
 
     def get_state(self, target):
         if target == 'gen':

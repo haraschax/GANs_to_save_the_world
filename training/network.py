@@ -34,7 +34,7 @@ def linear(layers, c_in, c_out, sig=True, wn=False, relu=False):
     if wn:      layers.append(equalized_linear(c_in, c_out))
     else:       layers.append(Linear(c_in, c_out))
     if sig:     layers.append(nn.Sigmoid())
-    elif sig:     layers.append(nn.ReLU())
+    elif relu:     layers.append(nn.ReLU())
     return layers
 
     
@@ -86,19 +86,14 @@ class Generator(nn.Module):
         layers = []
         ndim = self.ngf
         layers = linear(layers, self.ni, ndim, sig=False, wn=self.flag_wn, relu=True)
-        #layers = linear(layers, ndim, ndim*2, sig=False, wn=self.flag_wn, relu=True)
-        #layers = linear(layers, ndim*2, ndim*2, sig=False, wn=self.flag_wn, relu=True)
-        #layers = linear(layers, ndim*2, ndim*2, sig=False, wn=self.flag_wn, relu=True)
-        #layers = linear(layers, ndim*2, ndim*2, sig=False, wn=self.flag_wn, relu=True)
-        #layers = linear(layers, ndim*2, ndim, sig=False, wn=self.flag_wn, relu=True)
-        #layers = linear(layers, ndim, ndim, sig=False, wn=self.flag_wn, relu=True)
+        layers = linear(layers, ndim, ndim*2, sig=False, wn=self.flag_wn, relu=True)
+        layers = linear(layers, ndim*2, ndim*2, sig=False, wn=self.flag_wn, relu=True)
+        layers = linear(layers, ndim*2, ndim*2, sig=False, wn=self.flag_wn, relu=True)
+        layers = linear(layers, ndim*2, ndim*2, sig=False, wn=self.flag_wn, relu=True)
+        layers = linear(layers, ndim*2, ndim, sig=False, wn=self.flag_wn, relu=True)
+        layers = linear(layers, ndim, ndim, sig=False, wn=self.flag_wn, relu=True)
         return nn.Sequential(*layers)
 
-    def make_noise_mixer(self):
-        layers = []
-        ndim = self.ngf
-        layers = linear(layers, ndim*2, ndim, sig=False, wn=self.flag_wn, relu=True)
-        return nn.Sequential(*layers)
 
     def first_block(self):
         layers = []
@@ -132,75 +127,24 @@ class Generator(nn.Module):
     def to_rgb_block(self, c_in):
         layers = []
         layers = deconv(layers, c_in, self.nc, 1, 1, 0, self.flag_leaky, self.flag_bn, self.flag_wn, self.flag_pixelwise, only=True)
-        if self.flag_tanh:  layers.append(nn.Tanh())
+        if self.flag_tanh:
+          layers.append(nn.Tanh())
         return nn.Sequential(*layers)
 
-    def get_init_gen(self):
+    def get_init_gen(self, max_resl=7):
         model = nn.Sequential()
         first_block, ndim = self.first_block()
         model.add_module('first_block', first_block)
+        for resl in range(2, max_resl):
+          block, ndim, name = self.intermediate_block(resl)
+          model.add_module(name, block)
         model.add_module('to_rgb_block', self.to_rgb_block(ndim))
         self.module_names = get_module_names(model)
         return model
-    
-    def grow_network(self, resl):
-        # we make new network since pytorch does not support remove_module()
-        new_model = nn.Sequential()
-        names = get_module_names(self.model)
-        for name, module in self.model.named_children():
-            if not name=='to_rgb_block':
-                new_model.add_module(name, module)                      # make new structure and,
-                new_model[-1].load_state_dict(module.state_dict())      # copy pretrained weights
-            
-        if resl >= 3 and resl <= 9:
-            print('growing network[{}x{} to {}x{}]. It may take few seconds...'.format(int(pow(2,resl-1)), int(pow(2,resl-1)), int(pow(2,resl)), int(pow(2,resl))))
-            low_resl_to_rgb = deepcopy_module(self.model, 'to_rgb_block')
-            prev_block = nn.Sequential()
-            prev_block.add_module('low_resl_upsample', nn.Upsample(scale_factor=2, mode='nearest'))
-            prev_block.add_module('low_resl_to_rgb', low_resl_to_rgb)
 
-            inter_block, ndim, self.layer_name = self.intermediate_block(resl)
-            next_block = nn.Sequential()
-            next_block.add_module('high_resl_block', inter_block)
-            next_block.add_module('high_resl_to_rgb', self.to_rgb_block(ndim))
 
-            new_model.add_module('concat_block', ConcatTable(prev_block, next_block))
-            new_model.add_module('fadein_block', fadein_layer(self.config))
-            self.model = None
-            self.model = new_model
-            self.module_names = get_module_names(self.model)
-           
-    def flush_network(self):
-        try:
-            print('flushing network... It may take few seconds...')
-            # make deep copy and paste.
-            high_resl_block = deepcopy_module(self.model.concat_block.layer2, 'high_resl_block')
-            high_resl_to_rgb = deepcopy_module(self.model.concat_block.layer2, 'high_resl_to_rgb')
-           
-            new_model = nn.Sequential()
-            for name, module in self.model.named_children():
-                if name!='concat_block' and name!='fadein_block':
-                    new_model.add_module(name, module)                      # make new structure and,
-                    new_model[-1].load_state_dict(module.state_dict())      # copy pretrained weights
-
-            # now, add the high resolution block.
-            new_model.add_module(self.layer_name, high_resl_block)
-            new_model.add_module('to_rgb_block', high_resl_to_rgb)
-            self.model = new_model
-            self.module_names = get_module_names(self.model)
-        except:
-            self.model = self.model
-
-    def freeze_layers(self):
-        # let's freeze pretrained blocks. (Found freezing layers not helpful, so did not use this func.)
-        print('freeze pretrained weights ... ')
-        for param in self.model.parameters():
-            param.requires_grad = False
-
-    def forward(self, z, coord):
+    def forward(self, coord):
         x = self.encoder(coord)
-        x = torch.cat((z, x), dim=1)
-        x = self.noise_mixer(x)
         x = self.model(x.view(x.size(0), -1, 1, 1))
         return x
 
@@ -242,13 +186,13 @@ class Discriminator(nn.Module):
     def make_classifier(self):
         layers = []
         ndim = self.ndf
-        #layers = linear(layers, ndim, ndim*2, sig=False, wn=self.flag_wn, relu=True)
-        #layers = linear(layers, ndim*2, ndim*2, sig=False, wn=self.flag_wn, relu=True)
-        #layers = linear(layers, ndim*2, ndim*2, sig=False, wn=self.flag_wn, relu=True)
-        #layers = linear(layers, ndim*2, ndim, sig=False, wn=self.flag_wn, relu=True)
-        layers.append(minibatch_std_concat_layer(averaging='none'))
-        #layers = linear(layers, ndim*2, ndim*2, sig=False, wn=self.flag_wn, relu=True)
-        #layers = linear(layers, ndim*2, ndim*2, sig=False, wn=self.flag_wn, relu=True)
+        layers = linear(layers, ndim + 3, ndim*2, sig=False, wn=self.flag_wn, relu=True)
+        layers = linear(layers, ndim*2, ndim*2, sig=False, wn=self.flag_wn, relu=True)
+        layers = linear(layers, ndim*2, ndim*2, sig=False, wn=self.flag_wn, relu=True)
+        layers = linear(layers, ndim*2, ndim*2, sig=False, wn=self.flag_wn, relu=True)
+        #layers.append(minibatch_std_concat_layer(averaging='none'))
+        layers = linear(layers, ndim*2, ndim*2, sig=False, wn=self.flag_wn, relu=True)
+        layers = linear(layers, ndim*2, ndim*2, sig=False, wn=self.flag_wn, relu=True)
         layers = linear(layers, ndim*2, ndim, sig=False, wn=self.flag_wn, relu=True)
         layers = linear(layers, ndim, 1, sig=self.flag_sigmoid, wn=self.flag_wn)
         return nn.Sequential(*layers)
@@ -351,7 +295,7 @@ class Discriminator(nn.Module):
     def forward(self, x, z):
         x = self.model(x)
         #y = self.encoder(z)
-        #x = torch.cat((x, z), dim=1)
+        x = torch.cat((x, z), dim=1)
         x = self.classifier(x)
         return x
 
