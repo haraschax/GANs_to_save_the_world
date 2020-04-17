@@ -18,6 +18,7 @@ def deconv(layers, c_in, c_out, k_size, stride=1, pad=0, leaky=True, bn=False, w
         if pixel:   layers.append(pixelwise_norm_layer())
     return layers
 
+
 def conv(layers, c_in, c_out, k_size, stride=1, pad=0, leaky=True, bn=False, wn=False, pixel=False, gdrop=True, only=False):
     if gdrop:       layers.append(generalized_drop_out(mode='prop', strength=0.0))
     if wn:          layers.append(equalized_conv2d(c_in, c_out, k_size, stride, pad, initializer='kaiming'))
@@ -29,15 +30,24 @@ def conv(layers, c_in, c_out, k_size, stride=1, pad=0, leaky=True, bn=False, wn=
         if pixel:   layers.append(pixelwise_norm_layer())
     return layers
 
+
 def linear(layers, c_in, c_out, sig=True, wn=False, relu=False):
     layers.append(Flatten())
-    if wn:      layers.append(equalized_linear(c_in, c_out))
-    else:       layers.append(Linear(c_in, c_out))
-    if sig:     layers.append(nn.Sigmoid())
-    elif relu:     layers.append(nn.ReLU())
+    if wn:
+        layers.append(equalized_linear(c_in, c_out))
+    else:
+        layers.append(Linear(c_in, c_out))
+    if sig:
+        layers.append(nn.Sigmoid())
+    elif relu:
+        layers.append(nn.ReLU())
     return layers
 
-    
+def dropout(layers, drop=0.5):
+    layers.append(nn.Dropout(drop))
+    return layers
+
+
 def deepcopy_module(module, target):
     new_module = nn.Sequential()
     for name, m in module.named_children():
@@ -79,7 +89,6 @@ class Generator(nn.Module):
         self.layer_name = None
         self.module_names = []
         self.encoder = self.make_encoder()
-        self.noise_mixer = self.make_noise_mixer()
         self.model = self.get_init_gen()
 
     def make_encoder(self):
@@ -90,6 +99,7 @@ class Generator(nn.Module):
         layers = linear(layers, ndim*2, ndim*2, sig=False, wn=self.flag_wn, relu=True)
         layers = linear(layers, ndim*2, ndim*2, sig=False, wn=self.flag_wn, relu=True)
         layers = linear(layers, ndim*2, ndim*2, sig=False, wn=self.flag_wn, relu=True)
+        layers = dropout(layers, 0.5)
         layers = linear(layers, ndim*2, ndim, sig=False, wn=self.flag_wn, relu=True)
         layers = linear(layers, ndim, ndim, sig=False, wn=self.flag_wn, relu=True)
         return nn.Sequential(*layers)
@@ -141,7 +151,6 @@ class Generator(nn.Module):
         model.add_module('to_rgb_block', self.to_rgb_block(ndim))
         self.module_names = get_module_names(model)
         return model
-
 
     def forward(self, coord):
         x = self.encoder(coord)

@@ -20,6 +20,7 @@ def get_quarters(base_dir, base_req, depth):
   for q in range(4):
     if not os.path.isdir(base_dir + str(q)):
       os.mkdir(base_dir + str(q))
+    if not os.path.exists(base_dir + str(q) + '/img.jpeg'):
       save_img(base_req + str(q), base_dir + str(q) + '/img.jpeg')
     print(base_req)
     if depth > 1:
