@@ -1,2 +1,5 @@
 repo/*
+.ipynb*
 __pycache__/*
+test/*
+tb_backups/*
