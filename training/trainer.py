@@ -84,15 +84,16 @@ class trainer:
 
 
 
-            
     def renew_everything(self):
         # renew dataloader.
         self.loader = DL.dataloader(config)
         self.loader.renew(min(floor(self.resl), self.max_resl))
-        
+
         # define tensors
         self.z = torch.FloatTensor(self.loader.batchsize, self.nz)
         self.coord = torch.FloatTensor(self.loader.batchsize, self.ni)
+        self.coord_test = torch.FloatTensor(16, self.ni)
+        self.x_test_true = torch.FloatTensor(16, 3, self.loader.imsize, self.loader.imsize)
         self.x = torch.FloatTensor(self.loader.batchsize, 3, self.loader.imsize, self.loader.imsize)
         self.x_tilde = torch.FloatTensor(self.loader.batchsize, 3, self.loader.imsize, self.loader.imsize)
         self.real_label = torch.FloatTensor(self.loader.batchsize).fill_(1)
@@ -178,10 +179,9 @@ class trainer:
         #self.coord_test[:,1] = torch.mul(self.coord_test[:,1], 2)
         #self.coord_test[:,2] = torch.floor(torch.remainder(self.coord_test[:,2], 7)).add(1)
         #np.savetxt('repo/coord_test.txt', self.coord_test.cpu().numpy())
-        self.coord_test = torch.FloatTensor(np.loadtxt('test/coord.txt'))
-        self.coord_test[:,2] = (.5)**self.coord_test[:,2]
-        if self.use_cuda:
-            self.coord_test = self.coord_test.cuda()
+        test_batch = self.loader.get_batch()
+        self.coord_test.data = test_batch['meta'].cuda()
+        self.x_test_true.data = self.feed_interpolated_input(test_batch['image'])
 
         g_losses, l1_metrics, d_losses = [], [] ,[]
         for epoch in range(5000): #True: #step in range(2, self.max_resl+1+5):
@@ -214,15 +214,16 @@ class trainer:
                 self.x_tilde = self.G(self.coord)
                 self.fx_tilde = self.D(self.x_tilde.detach(), self.coord)
 
-                loss_d = self.mse(self.fx.squeeze(), self.real_label) + self.mse(self.fx_tilde, self.fake_label)
+                loss_d = torch.mean(self.fx_tilde - self.fx) + torch.mean(.001*(torch.square(self.fx)))  #self.mse(self.fx.squeeze(), self.real_label) + self.mse(self.fx_tilde, self.fake_label)
                 loss_d.backward()
                 self.opt_d.step()
 
                 # update generator.
-                fx_tilde = self.D(self.x_tilde, self.coord)
-                loss_g = self.mse(fx_tilde.squeeze(), self.real_label.detach()) #+ self.mae(self.x, self.x_tilde)
+                self.fx_tilde = self.D(self.x_tilde, self.coord)
                 metric_l1 = self.mae(self.x, self.x_tilde)
+                loss_g = torch.mean(-self.fx_tilde)
                 #loss_g = self.mae(self.x, self.x_tilde)
+                #loss_g = torch.mean((fx_tilde.squeeze(), self.real_label.detach()) #+ self.mae(self.x, self.x_tilde)
                 loss_g.backward()
                 self.opt_g.step()
                 
@@ -263,6 +264,7 @@ class trainer:
                 #self.tb.add_scalar('tick/cur_resl', int(pow(2,floor(self.resl))), self.globalIter)
                 #IMAGE GRID
                 self.tb.add_image_grid('grid/x_test', 4, utils.adjust_dyn_range(x_test.data.float(), [0,1], [0,1]), epoch)
+                self.tb.add_image_grid('grid/x_true', 4, utils.adjust_dyn_range(self.x_test_true.data.float(), [0,1], [0,1]), epoch)
 
     def get_state(self, target):
         if target == 'gen':
