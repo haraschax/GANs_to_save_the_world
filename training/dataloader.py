@@ -96,7 +96,7 @@ def get_custom_tile_geodetic(lat, lon, zoom):
 
 
 class SatImageDataset(Dataset):
-  def __init__(self, transform=None, size=100000, max_zoom=8):
+  def __init__(self, transform=None, size=1000000, max_zoom=8):
     self.size = size
     self.transform = transform
     self.samples = np.random.uniform(0.0, 1.0, size=(self.size, 3))
@@ -124,7 +124,7 @@ class SatImageDataset(Dataset):
 class dataloader:
   def __init__(self, config):
     self.root = config.train_data_root
-    self.batch_table = {4:32, 8:32, 16:32, 32:16, 64:16, 128:16, 256:12, 512:3, 1024:1}  # change this according to available gpu memory.
+    self.batch_table = {4:32, 8:32, 16:32, 32:16, 64:8, 128:8, 256:12, 512:3, 1024:1}  # change this according to available gpu memory.
     self.batchsize = int(self.batch_table[pow(2,2)])        # we start from 2^2=4
     self.imsize = int(pow(2,2))
     self.num_workers = 0

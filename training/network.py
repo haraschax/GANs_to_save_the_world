@@ -31,16 +31,18 @@ def conv(layers, c_in, c_out, k_size, stride=1, pad=0, leaky=True, bn=False, wn=
     return layers
 
 
-def linear(layers, c_in, c_out, sig=True, wn=False, relu=False):
+def linear(layers, c_in, c_out, sig=True, wn=False, relu=False, elu=False):
     layers.append(Flatten())
     if wn:
         layers.append(equalized_linear(c_in, c_out))
     else:
-        layers.append(Linear(c_in, c_out))
+        layers.append(nn.Linear(c_in, c_out))
     if sig:
         layers.append(nn.Sigmoid())
     elif relu:
         layers.append(nn.ReLU())
+    elif elu:
+        layers.append(nn.ELU())
     return layers
 
 def dropout(layers, drop=0.5):
@@ -87,21 +89,20 @@ class Generator(nn.Module):
         self.ni = config.ni
         self.ngf = config.ngf
         self.layer_name = None
-        self.module_names = []
         self.encoder = self.make_encoder()
         self.model = self.get_init_gen()
+        self.module_names = get_module_names(self.encoder) + get_module_names(self.model)
 
     def make_encoder(self):
         layers = []
         ndim = self.ngf
-        layers = linear(layers, self.ni, ndim, sig=False, wn=self.flag_wn, relu=True)
-        layers = linear(layers, ndim, ndim*2, sig=False, wn=self.flag_wn, relu=True)
+        layers = linear(layers, self.ni, ndim*2, sig=False, wn=self.flag_wn, relu=True)
+        layers = linear(layers, ndim*2, ndim*2, sig=False, wn=self.flag_wn, elu=True)
         layers = linear(layers, ndim*2, ndim*2, sig=False, wn=self.flag_wn, relu=True)
-        layers = linear(layers, ndim*2, ndim*2, sig=False, wn=self.flag_wn, relu=True)
-        layers = linear(layers, ndim*2, ndim*2, sig=False, wn=self.flag_wn, relu=True)
+        layers = linear(layers, ndim*2, ndim*2, sig=False, wn=self.flag_wn, elu=True)
         layers = dropout(layers, 0.5)
         layers = linear(layers, ndim*2, ndim, sig=False, wn=self.flag_wn, relu=True)
-        layers = linear(layers, ndim, ndim, sig=False, wn=self.flag_wn, relu=True)
+        layers = linear(layers, ndim, ndim, sig=False, wn=self.flag_wn, elu=True)
         return nn.Sequential(*layers)
 
 
@@ -149,7 +150,6 @@ class Generator(nn.Module):
           block, ndim, name = self.intermediate_block(resl)
           model.add_module(name, block)
         model.add_module('to_rgb_block', self.to_rgb_block(ndim))
-        self.module_names = get_module_names(model)
         return model
 
     def forward(self, coord):
@@ -198,8 +198,8 @@ class Discriminator(nn.Module):
         layers = linear(layers, ndim + 3, ndim*2, sig=False, wn=self.flag_wn, relu=True)
         layers = linear(layers, ndim*2, ndim*2, sig=False, wn=self.flag_wn, relu=True)
         layers = linear(layers, ndim*2, ndim*2, sig=False, wn=self.flag_wn, relu=True)
-        layers = linear(layers, ndim*2, ndim*2, sig=False, wn=self.flag_wn, relu=True)
-        #layers.append(minibatch_std_concat_layer(averaging='none'))
+        layers = linear(layers, ndim*2, ndim, sig=False, wn=self.flag_wn, relu=True)
+        layers.append(minibatch_std_concat_layer(averaging='none'))
         layers = linear(layers, ndim*2, ndim*2, sig=False, wn=self.flag_wn, relu=True)
         layers = linear(layers, ndim*2, ndim*2, sig=False, wn=self.flag_wn, relu=True)
         layers = linear(layers, ndim*2, ndim, sig=False, wn=self.flag_wn, relu=True)
@@ -235,71 +235,17 @@ class Discriminator(nn.Module):
         layers = conv(layers, self.nc, ndim, 1, 1, 0, self.flag_leaky, self.flag_bn, self.flag_wn, pixel=False)
         return  nn.Sequential(*layers)
     
-    def get_init_dis(self):
+    def get_init_dis(self, max_resl=7):
         model = nn.Sequential()
         last_block, ndim = self.last_block()
-        model.add_module('from_rgb_block', self.from_rgb_block(ndim))
+        model.add_module('from_rgb_block', self.from_rgb_block(ndim//2))
+        for resl in range(max_resl-1, 1, -1):
+          block, ndim, name = self.intermediate_block(resl)
+          model.add_module(name, block)
         model.add_module('last_block', last_block)
         self.module_names = get_module_names(model)
         return model
-    
 
-    def grow_network(self, resl):
-            
-        if resl >= 3 and resl <= 9:
-            print('growing network[{}x{} to {}x{}]. It may take few seconds...'.format(int(pow(2,resl-1)), int(pow(2,resl-1)), int(pow(2,resl)), int(pow(2,resl))))
-            low_resl_from_rgb = deepcopy_module(self.model, 'from_rgb_block')
-            prev_block = nn.Sequential()
-            prev_block.add_module('low_resl_downsample', nn.AvgPool2d(kernel_size=2))
-            prev_block.add_module('low_resl_from_rgb', low_resl_from_rgb)
-
-            inter_block, ndim, self.layer_name = self.intermediate_block(resl)
-            next_block = nn.Sequential()
-            next_block.add_module('high_resl_from_rgb', self.from_rgb_block(ndim))
-            next_block.add_module('high_resl_block', inter_block)
-
-            new_model = nn.Sequential()
-            new_model.add_module('concat_block', ConcatTable(prev_block, next_block))
-            new_model.add_module('fadein_block', fadein_layer(self.config))
-
-            # we make new network since pytorch does not support remove_module()
-            names = get_module_names(self.model)
-            for name, module in self.model.named_children():
-                if not name=='from_rgb_block':
-                    new_model.add_module(name, module)                      # make new structure and,
-                    new_model[-1].load_state_dict(module.state_dict())      # copy pretrained weights
-            self.model = None
-            self.model = new_model
-            self.module_names = get_module_names(self.model)
-
-    def flush_network(self):
-        try:
-            print('flushing network... It may take few seconds...')
-            # make deep copy and paste.
-            high_resl_block = deepcopy_module(self.model.concat_block.layer2, 'high_resl_block')
-            high_resl_from_rgb = deepcopy_module(self.model.concat_block.layer2, 'high_resl_from_rgb')
-           
-            # add the high resolution block.
-            new_model = nn.Sequential()
-            new_model.add_module('from_rgb_block', high_resl_from_rgb)
-            new_model.add_module(self.layer_name, high_resl_block)
-            
-            # add rest.
-            for name, module in self.model.named_children():
-                if name!='concat_block' and name!='fadein_block':
-                    new_model.add_module(name, module)                      # make new structure and,
-                    new_model[-1].load_state_dict(module.state_dict())      # copy pretrained weights
-
-            self.model = new_model
-            self.module_names = get_module_names(self.model)
-        except:
-            self.model = self.model
-    
-    def freeze_layers(self):
-        # let's freeze pretrained blocks. (Found freezing layers not helpful, so did not use this func.)
-        print('freeze pretrained weights ... ')
-        for param in self.model.parameters():
-            param.requires_grad = False
 
     def forward(self, x, z):
         x = self.model(x)

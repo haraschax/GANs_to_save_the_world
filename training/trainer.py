@@ -12,6 +12,7 @@ from tqdm import tqdm
 import tf_recorder as tensorboard
 import utils as utils
 import numpy as np
+from torchsummary import summary
 # import tensorflow as tf
 
 
@@ -54,9 +55,9 @@ class trainer:
         self.G = net.Generator(config)
         self.D = net.Discriminator(config)
         print ('Generator structure: ')
-        print(self.G.model)
+        print(self.G)
         print ('Discriminator structure: ')
-        print(self.D.model)
+        print(self.D)
         self.mse = torch.nn.MSELoss()
         self.mae = torch.nn.L1Loss()
         if self.use_cuda:
@@ -178,12 +179,18 @@ class trainer:
         #self.coord_test[:,2] = torch.floor(torch.remainder(self.coord_test[:,2], 7)).add(1)
         #np.savetxt('repo/coord_test.txt', self.coord_test.cpu().numpy())
         self.coord_test = torch.FloatTensor(np.loadtxt('test/coord.txt'))
-        self.coord_test[:,2] = self.coord_test[:,2]/10.0
+        self.coord_test[:,2] = (.5)**self.coord_test[:,2]
         if self.use_cuda:
             self.coord_test = self.coord_test.cuda()
 
-        g_losses = []
+        g_losses, l1_metrics, d_losses = [], [] ,[]
         for epoch in range(5000): #True: #step in range(2, self.max_resl+1+5):
+            self.lr = .996*self.lr
+            for g in self.opt_d.param_groups:
+              g['lr'] = self.lr
+            for g in self.opt_g.param_groups:
+              g['lr'] = self.lr
+
             for step in range(128):
                 self.globalIter = self.globalIter+1
 
@@ -192,44 +199,49 @@ class trainer:
                 self.D.zero_grad()
 
                 # update discriminator.
-                #batch = self.loader.get_batch()
-                #self.coord.data = batch['meta'].cuda()
-                #self.coord[:,0] = self.coord[:,0]/90.0
-                #self.coord[:,1] = self.coord[:,1]/180.0
-                #self.coord[:,2] = self.coord[:,2]/3.0 - 1.0
-                #self.x.data = self.feed_interpolated_input(batch['image'])
+                batch = self.loader.get_batch()
+                self.x.data = self.feed_interpolated_input(batch['image'])
                 #if self.flag_add_noise:
                 #    self.x = self.add_noise(self.x)
-                #self.fx = self.D(self.x, self.coord)
+                self.coord.data = batch['meta'].cuda()
+                self.coord[:,2] = (.5)**self.coord[:,2]
+                self.fx = self.D(self.x, self.coord)
 
                 batch = self.loader.get_batch()
                 self.coord.data = batch['meta'].cuda()
-                self.coord[:,2] = self.coord[:,2]/10.0
+                self.coord[:,2] = (.5)**self.coord[:,2]
                 self.x.data = self.feed_interpolated_input(batch['image'])
                 self.x_tilde = self.G(self.coord)
-                #self.fx_tilde = self.D(self.x_tilde.detach(), self.coord)
+                self.fx_tilde = self.D(self.x_tilde.detach(), self.coord)
 
-                #loss_d = self.mse(self.fx.squeeze(), self.real_label) + self.mse(self.fx_tilde, self.fake_label)
-                #loss_d.backward()
-                #self.opt_d.step()
+                loss_d = self.mse(self.fx.squeeze(), self.real_label) + self.mse(self.fx_tilde, self.fake_label)
+                loss_d.backward()
+                self.opt_d.step()
 
                 # update generator.
-                #fx_tilde = self.D(self.x_tilde, self.coord)
-                #loss_g = self.mse(fx_tilde.squeeze(), self.real_label.detach())   + self.mae(self.x, self.x_tilde)
-                loss_g = self.mae(self.x, self.x_tilde)
+                fx_tilde = self.D(self.x_tilde, self.coord)
+                loss_g = self.mse(fx_tilde.squeeze(), self.real_label.detach()) #+ self.mae(self.x, self.x_tilde)
+                metric_l1 = self.mae(self.x, self.x_tilde)
+                #loss_g = self.mae(self.x, self.x_tilde)
                 loss_g.backward()
                 self.opt_g.step()
                 
                 # logging.
-                log_msg = ' [E:{0}][T:{1}][{2:6}/{3:6}]  errD: {4:.4f} | errG: {5:.4f} | {5:.5f}]'.format(epoch, step, step, 128, 0, loss_g.item(), self.lr)
+                log_msg = ' [E:{0}][T:{1}][{2:6}/{3:6}]  errD: {4:.4f} | errG: {5:.4f} | {6:.5f}| {7:.8f}]'.format(epoch, step, step, 128, loss_d.item(), loss_g.item(), metric_l1.item(), self.lr)
                 tqdm.write(log_msg)
 
                 if self.use_tb:
                     self.tb.add_scalar('data/loss_g', loss_g.item(), epoch*128 + step)
+                    self.tb.add_scalar('data/loss_d', loss_d.item(), epoch*128 + step)
+                    self.tb.add_scalar('data/l1_metric', metric_l1.item(), epoch*128 + step)
                 g_losses.append(loss_g.item())
+                d_losses.append(loss_d.item())
+                l1_metrics.append(metric_l1.item())
+
+
 
             # save model.
-            self.snapshot('repo/model')
+            #self.snapshot('repo/model', epoch)
 
 
             # save image grid.
@@ -244,9 +256,10 @@ class trainer:
                 with torch.no_grad():
                     x_test = self.G(self.coord_test)
                 self.tb.add_scalar('data/loss_g_epoch', np.mean(g_losses), epoch)
-                g_losses = []
-                #self.tb.add_scalar('data/loss_d', 0, self.globalIter)
-                #self.tb.add_scalar('tick/lr', self.lr, self.globalIter)
+                self.tb.add_scalar('data/loss_d_epoch', np.mean(d_losses), epoch)
+                self.tb.add_scalar('data/l1_metric_epoch', np.mean(l1_metrics), epoch)
+                self.tb.add_scalar('tick/lr', self.lr, self.globalIter)
+                g_losses, l1_metrics, d_losses = [], [] ,[]
                 #self.tb.add_scalar('tick/cur_resl', int(pow(2,floor(self.resl))), self.globalIter)
                 #IMAGE GRID
                 self.tb.add_image_grid('grid/x_test', 4, utils.adjust_dyn_range(x_test.data.float(), [0,1], [0,1]), epoch)
@@ -268,23 +281,21 @@ class trainer:
             return state
 
 
-    def snapshot(self, path):
+    def snapshot(self, path, epoch):
         if not os.path.exists(path):
             if os.name == 'nt':
                 os.system('mkdir {}'.format(path.replace('/', '\\')))
             else:
                 os.system('mkdir -p {}'.format(path))
         # save every 100 tick if the network is in stab phase.
-        ndis = 'dis_R{}_T{}.pth.tar'.format(int(floor(self.resl)), self.globalTick)
-        ngen = 'gen_R{}_T{}.pth.tar'.format(int(floor(self.resl)), self.globalTick)
-        if self.globalTick%50==0:
-            if self.phase == 'gstab' or self.phase =='dstab' or self.phase == 'final':
-                save_path = os.path.join(path, ndis)
-                if not os.path.exists(save_path):
-                    torch.save(self.get_state('dis'), save_path)
-                    save_path = os.path.join(path, ngen)
-                    torch.save(self.get_state('gen'), save_path)
-                    print('[snapshot] model saved @ {}'.format(path))
+        #ndis = 'dis_E{}.pth.tar'.format(int(floor(self.resl)), self.globalTick)
+        ngen = 'gen_E{}.pth.tar'.format(int(epoch))
+        save_path = os.path.join(path, ngen)
+        if not os.path.exists(save_path):
+          #torch.save(self.get_state('dis'), save_path)
+          #save_path = os.path.join(path, ngen)
+          torch.save(self.get_state('gen'), save_path)
+          print('[snapshot] model saved @ {}'.format(path))
 
 if __name__ == '__main__':
     ## perform training.
