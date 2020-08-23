@@ -94,6 +94,7 @@ class trainer:
         self.coord = torch.FloatTensor(self.loader.batchsize, self.ni)
         self.coord_test = torch.FloatTensor(16, self.ni)
         self.x_test_true = torch.FloatTensor(16, 3, self.loader.imsize, self.loader.imsize)
+        self.x_test = torch.FloatTensor(16, 3, self.loader.imsize, self.loader.imsize)
         self.x = torch.FloatTensor(self.loader.batchsize, 3, self.loader.imsize, self.loader.imsize)
         self.x_tilde = torch.FloatTensor(self.loader.batchsize, 3, self.loader.imsize, self.loader.imsize)
         self.real_label = torch.FloatTensor(self.loader.batchsize).fill_(1)
@@ -180,12 +181,17 @@ class trainer:
         #self.coord_test[:,2] = torch.floor(torch.remainder(self.coord_test[:,2], 7)).add(1)
         #np.savetxt('repo/coord_test.txt', self.coord_test.cpu().numpy())
         test_batch = self.loader.get_batch()
-        self.coord_test.data = test_batch['meta'].cuda()
-        self.x_test_true.data = self.feed_interpolated_input(test_batch['image'])
+        self.coord_test.data[:8] = test_batch['meta'].cuda()
+        self.x_test_true.data[:8] = self.feed_interpolated_input(test_batch['image'])
+        test_batch = self.loader.get_batch()
+        self.coord_test.data[8:] = test_batch['meta'].cuda()
+        self.x_test_true.data[8:] = self.feed_interpolated_input(test_batch['image'])
+        self.z_test = np.random.randn(self.coord_test.size()[0], 512).astype(np.float32)
+        self.z_test = Variable(torch.from_numpy(self.z_test)).cuda() if self.use_cuda else Variable(torch.from_numpy(self.z_test))
 
         g_losses, l1_metrics, d_losses = [], [] ,[]
         for epoch in range(5000): #True: #step in range(2, self.max_resl+1+5):
-            self.lr = .996*self.lr
+            self.lr = config.lr_decay*self.lr
             for g in self.opt_d.param_groups:
               g['lr'] = self.lr
             for g in self.opt_g.param_groups:
@@ -204,14 +210,14 @@ class trainer:
                 #if self.flag_add_noise:
                 #    self.x = self.add_noise(self.x)
                 self.coord.data = batch['meta'].cuda()
-                self.coord[:,2] = (.5)**self.coord[:,2]
                 self.fx = self.D(self.x, self.coord)
 
                 batch = self.loader.get_batch()
                 self.coord.data = batch['meta'].cuda()
-                self.coord[:,2] = (.5)**self.coord[:,2]
                 self.x.data = self.feed_interpolated_input(batch['image'])
-                self.x_tilde = self.G(self.coord)
+                z = np.random.randn(self.coord.size()[0], 512).astype(np.float32)
+                z = Variable(torch.from_numpy(z)).cuda() if self.use_cuda else Variable(torch.from_numpy(z))
+                self.x_tilde = self.G(self.coord, z)
                 self.fx_tilde = self.D(self.x_tilde.detach(), self.coord)
 
                 loss_d = torch.mean(self.fx_tilde - self.fx) + torch.mean(.001*(torch.square(self.fx)))  #self.mse(self.fx.squeeze(), self.real_label) + self.mse(self.fx_tilde, self.fake_label)
@@ -219,6 +225,12 @@ class trainer:
                 self.opt_d.step()
 
                 # update generator.
+                batch = self.loader.get_batch()
+                self.coord.data = batch['meta'].cuda()
+                self.x.data = self.feed_interpolated_input(batch['image'])
+                z = np.random.randn(self.coord.size()[0], 512).astype(np.float32)
+                z = Variable(torch.from_numpy(z)).cuda() if self.use_cuda else Variable(torch.from_numpy(z))
+                self.x_tilde = self.G(self.coord, z)
                 self.fx_tilde = self.D(self.x_tilde, self.coord)
                 metric_l1 = self.mae(self.x, self.x_tilde)
                 loss_g = torch.mean(-self.fx_tilde)
@@ -244,18 +256,10 @@ class trainer:
             # save model.
             #self.snapshot('repo/model', epoch)
 
-
-            # save image grid.
-            with torch.no_grad():
-                x_test = self.G(self.coord_test)
-            utils.mkdir('repo/save/grid')
-            utils.save_image_grid(x_test.data, 'repo/save/grid/epoch_{}.jpg'.format(epoch))
-
-
             # tensorboard visualization.
             if self.use_tb:
                 with torch.no_grad():
-                    x_test = self.G(self.coord_test)
+                    self.x_test = self.G(self.coord_test.cuda(), self.z_test)
                 self.tb.add_scalar('data/loss_g_epoch', np.mean(g_losses), epoch)
                 self.tb.add_scalar('data/loss_d_epoch', np.mean(d_losses), epoch)
                 self.tb.add_scalar('data/l1_metric_epoch', np.mean(l1_metrics), epoch)
@@ -263,7 +267,7 @@ class trainer:
                 g_losses, l1_metrics, d_losses = [], [] ,[]
                 #self.tb.add_scalar('tick/cur_resl', int(pow(2,floor(self.resl))), self.globalIter)
                 #IMAGE GRID
-                self.tb.add_image_grid('grid/x_test', 4, utils.adjust_dyn_range(x_test.data.float(), [0,1], [0,1]), epoch)
+                self.tb.add_image_grid('grid/x_test', 4, utils.adjust_dyn_range(self.x_test.data.float(), [0,1], [0,1]), epoch)
                 self.tb.add_image_grid('grid/x_true', 4, utils.adjust_dyn_range(self.x_test_true.data.float(), [0,1], [0,1]), epoch)
 
     def get_state(self, target):
