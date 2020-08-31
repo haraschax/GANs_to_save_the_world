@@ -171,6 +171,8 @@ class StyleGAN2(nn.Module):
         self.GE = Generator(image_size, latent_dim, network_capacity, transparent=transparent, attn_layers=attn_layers, no_const=no_const)
         if using_ddp:
             self.D = DDP(self.D.cuda(), device_ids=[gpu])
+            self.S = DDP(self.S.cuda(), device_ids=[gpu])
+            self.SE = DDP(self.SE.cuda(), device_ids=[gpu])
             self.G = DDP(self.G.cuda(), device_ids=[gpu])
             self.GE = DDP(self.GE.cuda(), device_ids=[gpu])
 
