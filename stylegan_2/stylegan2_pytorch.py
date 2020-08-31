@@ -8,6 +8,8 @@ from math import floor, log2
 from random import random
 from shutil import rmtree
 import multiprocessing
+import torch.distributed as dist
+
 
 import numpy as np
 import torch
@@ -22,6 +24,7 @@ import torchvision
 from torchvision import transforms
 
 from vector_quantize_pytorch import VectorQuantize
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 from PIL import Image
 from pathlib import Path
@@ -29,7 +32,7 @@ from dataloader import get_custom_tile
 from helpers import RandomApply, cast_list, EMA, set_requires_grad, cycle, \
                     default, loss_backwards, noise_list, mixed_list, image_noise, \
                     latent_to_w, styles_def_to_tensor, gradient_penalty, raise_if_nan, \
-                    noise, evaluate_in_chunks
+                    noise, evaluate_in_chunks, calc_pl_lengths
 from model import Discriminator, StyleVectorizer, Generator
 from functools import partial
 
@@ -151,18 +154,25 @@ class AugWrapper(nn.Module):
 
 
 class StyleGAN2(nn.Module):
-    def __init__(self, image_size, latent_dim=512, fmap_max=512, style_depth=8, network_capacity=16, transparent=False, fp16=False, cl_reg=False, steps=1, lr=1e-4, ttur_mult = 2, fq_layers = [], fq_dict_size = 256, attn_layers = [], no_const = False, lr_mlp = 0.1):
+    def __init__(self, image_size, latent_dim=512, fmap_max=512, style_depth=8, network_capacity=16, transparent=False, fp16=False, cl_reg=False, steps=1, lr=1e-4, ttur_mult=2, fq_layers=[], fq_dict_size=256, attn_layers=[], no_const=False, lr_mlp=0.1, using_ddp=False, gpu=0):
         super().__init__()
         self.lr = lr
         self.steps = steps
         self.ema_updater = EMA(0.995)
+        self.image_size = image_size
+        self.latent_dim = latent_dim
 
         self.S = StyleVectorizer(latent_dim, style_depth, lr_mul = lr_mlp)
-        self.G = Generator(image_size, latent_dim, network_capacity, transparent = transparent, attn_layers = attn_layers, no_const = no_const, fmap_max = fmap_max)
-        self.D = Discriminator(image_size, network_capacity, fq_layers = fq_layers, fq_dict_size = fq_dict_size, attn_layers = attn_layers, transparent = transparent, fmap_max = fmap_max)
+        self.G = Generator(image_size, latent_dim, network_capacity, transparent=transparent, attn_layers=attn_layers, no_const=no_const, fmap_max=fmap_max)
+        self.D = Discriminator(image_size, network_capacity, fq_layers=fq_layers, fq_dict_size=fq_dict_size, attn_layers=attn_layers, transparent=transparent, fmap_max=fmap_max)
 
+        self.num_layers = self.G.num_layers
         self.SE = StyleVectorizer(latent_dim, style_depth, lr_mul = lr_mlp)
         self.GE = Generator(image_size, latent_dim, network_capacity, transparent=transparent, attn_layers=attn_layers, no_const=no_const)
+        if using_ddp:
+            self.D = DDP(self.D.cuda(), device_ids=[gpu])
+            self.G = DDP(self.G.cuda(), device_ids=[gpu])
+            self.GE = DDP(self.GE.cuda(), device_ids=[gpu])
 
         self.D_cl = None
 
@@ -196,7 +206,11 @@ class StyleGAN2(nn.Module):
             if type(m) in {nn.Conv2d, nn.Linear}:
                 nn.init.kaiming_normal_(m.weight, a=0, mode='fan_in', nonlinearity='leaky_relu')
 
-        for block in self.G.blocks:
+        if isinstance(self.G, DDP):
+            blocks = self.G.module.blocks
+        else:
+            blocks = self.G.blocks
+        for block in blocks:
             nn.init.zeros_(block.to_noise1.weight)
             nn.init.zeros_(block.to_noise2.weight)
             nn.init.zeros_(block.to_noise1.bias)
@@ -219,7 +233,10 @@ class StyleGAN2(nn.Module):
         return x
 
 class Trainer():
-    def __init__(self, name, results_dir, models_dir, image_size, network_capacity, transparent=False, batch_size=4, mixed_prob=0.9, gradient_accumulate_every=1, lr=2e-4, lr_mlp=1., ttur_mult=2, num_workers=None, save_every = 1000, trunc_psi = 0.6, fp16 = False, cl_reg = False, fq_layers = [], fq_dict_size = 256, attn_layers = [], no_const = False, aug_prob = 0., dataset_aug_prob = 0., *args, **kwargs):
+    def __init__(self, name, results_dir, models_dir, image_size, network_capacity, transparent=False,
+                batch_size=4, mixed_prob=0.9, gradient_accumulate_every=1, lr=2e-4, lr_mlp=1., ttur_mult=2,
+                num_workers=None, save_every = 1000, trunc_psi=0.6, fp16 = False, cl_reg = False, fq_layers = [],
+                fq_dict_size = 256, attn_layers = [], no_const=False, aug_prob = 0., dataset_aug_prob = 0., *args, **kwargs):
         self.GAN_params = [args, kwargs]
         self.GAN = None
 
@@ -297,11 +314,18 @@ class Trainer():
         self.init_GAN()
 
     def config(self):
-        return {'image_size': self.image_size, 'network_capacity': self.network_capacity, 'transparent': self.transparent, 'fq_layers': self.fq_layers, 'fq_dict_size': self.fq_dict_size, 'attn_layers': self.attn_layers, 'no_const': self.no_const}
+        return {'image_size': self.image_size, 'network_capacity': self.network_capacity, 'transparent': self.transparent,
+                'fq_layers': self.fq_layers, 'fq_dict_size': self.fq_dict_size, 'attn_layers': self.attn_layers, 'no_const': self.no_const}
 
-    def set_data_src(self, folder):
+    def set_data_src(self, folder, using_ddp=False):
         self.dataset = Dataset(folder, self.image_size, transparent=self.transparent, aug_prob=self.dataset_aug_prob)
-        self.loader = cycle(data.DataLoader(self.dataset, num_workers=default(self.num_workers, num_cores), batch_size=self.batch_size, drop_last=True, shuffle=True, pin_memory=True))
+        if using_ddp: 
+            sampler = torch.utils.data.distributed.DistributedSampler(self.dataset,
+                            num_replicas=dist.get_world_size(),
+                            rank=dist.get_rank())
+        else:
+            sampler = None
+        self.loader = cycle(data.DataLoader(self.dataset, sampler=sampler, batch_size=self.batch_size, drop_last=True, pin_memory=True))
 
     def train(self):
         assert self.loader is not None, 'You must first initialize the data source with `.set_data_src(<folder of images>)`'
@@ -315,9 +339,9 @@ class Trainer():
 
         batch_size = self.batch_size
 
-        image_size = self.GAN.G.image_size
-        latent_dim = self.GAN.G.latent_dim
-        num_layers = self.GAN.G.num_layers
+        image_size = self.GAN.image_size
+        latent_dim = self.GAN.latent_dim
+        num_layers = self.GAN.num_layers
 
         aug_prob = self.aug_prob
 
@@ -464,9 +488,9 @@ class Trainer():
         ext = 'jpg' if not self.transparent else 'png'
         num_rows = num_image_tiles
     
-        latent_dim = self.GAN.G.latent_dim
-        image_size = self.GAN.G.image_size
-        num_layers = self.GAN.G.num_layers
+        latent_dim = self.GAN.latent_dim
+        image_size = self.GAN.image_size
+        num_layers = self.GAN.num_layers
 
         # latents and noise
 
@@ -475,12 +499,12 @@ class Trainer():
 
         # regular
 
-        generated_images = self.generate_truncated(self.GAN.S, self.GAN.G, latents, n, trunc_psi=self.trunc_psi)
+        generated_images = self.generate_truncated(self.GAN.S, self.GAN.G, latent_dim, latents, n, trunc_psi=self.trunc_psi)
         torchvision.utils.save_image(generated_images, str(self.results_dir / self.name / f'{str(num)}.{ext}'), nrow=num_rows)
         
         # moving averages
 
-        generated_images = self.generate_truncated(self.GAN.SE, self.GAN.GE, latents, n, trunc_psi=self.trunc_psi)
+        generated_images = self.generate_truncated(self.GAN.SE, self.GAN.GE, latent_dim, latents, n, trunc_psi=self.trunc_psi)
         torchvision.utils.save_image(generated_images, str(self.results_dir / self.name / f'{str(num)}-ema.{ext}'), nrow=num_rows)
 
         # mixing regularities
@@ -500,12 +524,11 @@ class Trainer():
         tt = int(num_layers / 2)
         mixed_latents = [(tmp1, tt), (tmp2, num_layers - tt)]
 
-        generated_images = self.generate_truncated(self.GAN.SE, self.GAN.GE, mixed_latents, n, trunc_psi=self.trunc_psi)
+        generated_images = self.generate_truncated(self.GAN.SE, self.GAN.GE, latent_dim, mixed_latents, n, trunc_psi=self.trunc_psi)
         torchvision.utils.save_image(generated_images, str(self.results_dir / self.name / f'{str(num)}-mr.{ext}'), nrow=num_rows)
 
     @torch.no_grad()
-    def generate_truncated(self, S, G, style, noi, trunc_psi=0.75, num_image_tiles=8):
-        latent_dim = G.latent_dim
+    def generate_truncated(self, S, G, latent_dim, style, noi, trunc_psi=0.75, num_image_tiles=8):
 
         if self.av is None:
             z = noise(2000, latent_dim)
@@ -530,9 +553,9 @@ class Trainer():
         ext = 'jpg' if not self.transparent else 'png'
         num_rows = num_image_tiles
 
-        latent_dim = self.GAN.G.latent_dim
-        image_size = self.GAN.G.image_size
-        num_layers = self.GAN.G.num_layers
+        latent_dim = self.GAN.latent_dim
+        image_size = self.GAN.image_size
+        num_layers = self.GAN.num_layers
 
         # latents and noise
 

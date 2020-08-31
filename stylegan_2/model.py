@@ -120,8 +120,6 @@ class GeneratorBlock(nn.Module):
         self.to_style2 = nn.Linear(latent_dim, filters)
         self.to_noise2 = nn.Linear(1, filters)
         self.conv2 = Conv2DMod(filters, filters, 3)
-        if torch.cuda.device_count() > 1:
-            self.conv2 = nn.DataParallel( self.conv2)
 
         self.activation = leaky_relu()
         self.to_rgb = RGBBlock(latent_dim, filters, upsample_rgb, rgba)
@@ -256,8 +254,6 @@ class Discriminator(nn.Module):
             is_not_last = ind != (len(chan_in_out) - 1)
 
             block = DiscriminatorBlock(in_chan, out_chan, downsample = is_not_last)
-            if torch.cuda.device_count() > 1:
-              block = nn.DataParallel(block)
             blocks.append(block)
 
             attn_fn = attn_and_ff(out_chan) if num_layer in attn_layers else None

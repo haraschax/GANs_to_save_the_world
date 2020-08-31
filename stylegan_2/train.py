@@ -1,5 +1,9 @@
 #!/usr/bin/env python
 import fire
+import os
+import argparse
+import torch
+import torch.multiprocessing as mp
 from retry.api import retry_call
 from tqdm import tqdm
 from helpers import NanException
@@ -7,13 +11,22 @@ from stylegan2_pytorch import Trainer
 
 from datetime import datetime
 
+if __name__ == "__main__":
+    gpu_count = torch.cuda.device_count()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-g', '--gpus', default=gpu_count, type=int)
+    parser.add_argument('-m', '--master', default='localhost', type=str)
+    args = parser.parse_args()
+
+
 def train_from_folder(
-    data = './data',
-    results_dir = './results',
-    models_dir = './models', 
-    name = 'default',
-    new = True,
-    load_from = -1,
+    gpu,
+    data='./data',
+    results_dir='./results',
+    models_dir='./models', 
+    name='default',
+    new=True,
+    load_from=-1,
     image_size = 256,
     network_capacity = 16,
     transparent = False,
@@ -39,6 +52,7 @@ def train_from_folder(
     aug_prob = 0.,
     dataset_aug_prob = 0.,
 ):
+    using_ddp = True
     model = Trainer(
         name,        
         results_dir,
@@ -61,8 +75,18 @@ def train_from_folder(
         attn_layers = attn_layers,
         no_const = no_const,
         aug_prob = aug_prob,
-        dataset_aug_prob = dataset_aug_prob
+        dataset_aug_prob = dataset_aug_prob,
+        using_ddp=using_ddp,
+        gpu=gpu
     )
+    if using_ddp:
+        world_size = torch.cuda.device_count()
+        torch.distributed.init_process_group(backend='nccl', rank=gpu, world_size=world_size)
+    else:
+        gpu = 0
+    torch.manual_seed(0)
+    torch.cuda.set_device(gpu)
+
 
     if not new:
         model.load(load_from)
@@ -85,12 +109,24 @@ def train_from_folder(
         print(f'interpolation generated at {results_dir}/{name}/{samples_name}')
         return
 
-    model.set_data_src(data)
+    model.set_data_src(data, using_ddp=using_ddp)
 
     for _ in tqdm(range(num_train_steps - model.steps), mininterval=10., desc=f'{name}<{data}>'):
-        retry_call(model.train, tries=3, exceptions=NanException)
+        model.train()#retry_call(model.train, tries=3, exceptions=NanException)
         if _ % 50 == 0:
             model.print_log()
 
 if __name__ == "__main__":
-    fire.Fire(train_from_folder)
+  #  fire.Fire(train_from_folder)
+    world_size = torch.cuda.device_count()
+    print(world_size)
+    if False:#args.gpus == 1 and args.nodes == 1:
+        print("running single process")
+        train_from_folder(None, args)
+    else:
+        os.environ['MASTER_ADDR'] = args.master
+        os.environ['MASTER_PORT'] = '12355'
+        mp.spawn(train_from_folder,
+                 args=[],
+                 nprocs=world_size,
+                 join=True)
