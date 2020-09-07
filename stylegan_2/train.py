@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-import fire
 import os
 import argparse
 import torch
@@ -30,7 +29,7 @@ def train_from_folder(
     image_size = 256,
     network_capacity = 16,
     transparent = False,
-    batch_size = 10,
+    batch_size = 5,
     gradient_accumulate_every = 6,
     num_train_steps = 150000,
     learning_rate = 2e-4,

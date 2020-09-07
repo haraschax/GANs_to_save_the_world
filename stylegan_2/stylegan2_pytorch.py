@@ -1,7 +1,5 @@
-import os
 import sys
 import math
-import fire
 import json
 from tqdm import tqdm
 from math import floor, log2
@@ -32,7 +30,7 @@ from dataloader import get_custom_tile
 from helpers import RandomApply, cast_list, EMA, set_requires_grad, cycle, \
                     default, loss_backwards, noise_list, mixed_list, image_noise, \
                     latent_to_w, styles_def_to_tensor, gradient_penalty, raise_if_nan, \
-                    noise, evaluate_in_chunks, calc_pl_lengths
+                    noise, evaluate_in_chunks, calc_pl_lengths, is_empty
 from model import Discriminator, StyleVectorizer, Generator
 from functools import partial
 
@@ -88,6 +86,12 @@ def resize_to_minimum_size(min_size, image):
         return torchvision.transforms.functional.resize(image, min_size)
     return image
 
+
+import cv2
+from xx.uncommon.cache import cache_gen
+from xx.uncommon.utils import tensor_to_frames
+
+
 class Dataset(data.Dataset):
     def __init__(self, folder, image_size, transparent=False,
                  aug_prob=0., max_zoom=8, size=1000000):
@@ -97,6 +101,21 @@ class Dataset(data.Dataset):
         self.samples[:,2] = np.floor(max_zoom*self.samples[:,2]) + 1.0
         self.image_size = image_size
 
+        '''
+        import cv2
+        from xx.uncommon.cache import cache_gen
+        from xx.uncommon.utils import tensor_to_frames
+        import tensorflow as tf
+        print(tf.__version__)
+
+        # Set CPU as available physical device
+        my_devices = tf.config.experimental.list_physical_devices(device_type='CPU')
+        tf.config.experimental.set_visible_devices(devices= my_devices, device_type='CPU')
+        tf.config.set_visible_devices([], 'GPU')
+        self.g = cache_gen('/raid.nvme/caches/roll_calib/train', shuffle_size=50000)
+        self.imgs = tensor_to_frames(next(self.g)[0]['input_imgs'].numpy())
+        self.in_batch_idx = 0
+        '''
         convert_image_fn = convert_transparent_to_rgb if not transparent else convert_rgb_to_transparent
         num_channels = 3 if not transparent else 4
 
@@ -113,6 +132,13 @@ class Dataset(data.Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx):
+        #if self.in_batch_idx == 512:
+        #    self.in_batch_idx = 0
+        #    self.imgs = tensor_to_frames(next(self.g)[0]['input_imgs'].numpy())
+        #img = cv2.cvtColor(self.imgs[self.in_batch_idx],cv2.COLOR_YUV2RGB_I420)[:,::2]
+        #img = Image.fromarray(img)
+        #self.in_batch_idx += 1
+
         sample = self.samples[idx]
         img = Image.fromarray(get_custom_tile(*sample))
         return self.transform(img)
@@ -157,6 +183,7 @@ class StyleGAN2(nn.Module):
     def __init__(self, image_size, latent_dim=512, fmap_max=512, style_depth=8, network_capacity=16, transparent=False, fp16=False, cl_reg=False, steps=1, lr=1e-4, ttur_mult=2, fq_layers=[], fq_dict_size=256, attn_layers=[], no_const=False, lr_mlp=0.1, using_ddp=False, gpu=0):
         super().__init__()
         self.lr = lr
+        self.gpu = gpu
         self.steps = steps
         self.ema_updater = EMA(0.995)
         self.image_size = image_size
@@ -474,14 +501,14 @@ class Trainer():
             raise NanException
 
         # periodically save results
+        self.steps += 1
 
-        if self.steps % self.save_every == 0:
+        if self.GAN.gpu == 0 and self.steps % self.save_every == 0:
             self.save(checkpoint_num)
 
-        if self.steps % 1000 == 0 or (self.steps % 100 == 0 and self.steps < 2500):
+        if self.GAN.gpu==0 and (self.steps % 1000 == 0 or (self.steps % 100 == 0 and self.steps < 2500)):
             self.evaluate(floor(self.steps / 1000))
 
-        self.steps += 1
         self.av = None
 
     @torch.no_grad()
