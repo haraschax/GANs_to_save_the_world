@@ -101,7 +101,6 @@ class Dataset(data.Dataset):
         self.samples[:,2] = np.floor(max_zoom*self.samples[:,2]) + 1.0
         self.image_size = image_size
 
-        '''
         import cv2
         from xx.uncommon.cache import cache_gen
         from xx.uncommon.utils import tensor_to_frames
@@ -115,7 +114,6 @@ class Dataset(data.Dataset):
         self.g = cache_gen('/raid.nvme/caches/roll_calib/train', shuffle_size=50000)
         self.imgs = tensor_to_frames(next(self.g)[0]['input_imgs'].numpy())
         self.in_batch_idx = 0
-        '''
         convert_image_fn = convert_transparent_to_rgb if not transparent else convert_rgb_to_transparent
         num_channels = 3 if not transparent else 4
 
@@ -132,15 +130,17 @@ class Dataset(data.Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        #if self.in_batch_idx == 512:
-        #    self.in_batch_idx = 0
-        #    self.imgs = tensor_to_frames(next(self.g)[0]['input_imgs'].numpy())
-        #img = cv2.cvtColor(self.imgs[self.in_batch_idx],cv2.COLOR_YUV2RGB_I420)[:,::2]
-        #img = Image.fromarray(img)
-        #self.in_batch_idx += 1
+        if self.in_batch_idx == 512:
+            self.in_batch_idx = 0
+            self.imgs = tensor_to_frames(next(self.g)[0]['input_imgs'].numpy())
+        img = cv2.cvtColor(self.imgs[self.in_batch_idx],cv2.COLOR_YUV2RGB_I420)[:,::2]
+        img = Image.fromarray(img)
+        self.in_batch_idx += 1
 
+        '''
         sample = self.samples[idx]
         img = Image.fromarray(get_custom_tile(*sample))
+        '''
         return self.transform(img)
 
 # augmentations
@@ -375,7 +375,7 @@ class Trainer():
         aug_prob = self.aug_prob
 
         apply_gradient_penalty = self.steps % 4 == 0
-        apply_path_penalty = self.steps > 5000 and self.steps % 32 == 0
+        apply_path_penalty = False#self.steps > 5000 and self.steps % 32 == 0
         apply_cl_reg_to_generated = self.steps > 20000
 
         backwards = partial(loss_backwards, self.fp16)

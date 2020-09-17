@@ -3,7 +3,6 @@ import os
 import argparse
 import torch
 import torch.multiprocessing as mp
-from retry.api import retry_call
 from tqdm import tqdm
 from helpers import NanException
 from stylegan2_pytorch import Trainer
@@ -29,8 +28,8 @@ def train_from_folder(
     image_size = 256,
     network_capacity = 16,
     transparent = False,
-    batch_size = 5,
-    gradient_accumulate_every = 6,
+    batch_size = 10,
+    gradient_accumulate_every = 3,
     num_train_steps = 150000,
     learning_rate = 2e-4,
     lr_mlp = 0.1,
@@ -112,7 +111,7 @@ def train_from_folder(
 
     for _ in tqdm(range(num_train_steps - model.steps), mininterval=10., desc=f'{name}<{data}>'):
         model.train()#retry_call(model.train, tries=3, exceptions=NanException)
-        if _ % 50 == 0:
+        if _ % 50 == 0 and gpu == 0:
             model.print_log()
 
 if __name__ == "__main__":
