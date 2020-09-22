@@ -1,6 +1,5 @@
 import torch
 import math
-from random import random
 from torch import nn
 from torch.autograd import grad as torch_grad
 
@@ -28,16 +27,6 @@ class EMA():
 class Flatten(nn.Module):
     def forward(self, x):
         return x.reshape(x.shape[0], -1)
-
-class RandomApply(nn.Module):
-    def __init__(self, prob, fn, fn_else = lambda x: x):
-        super().__init__()
-        self.fn = fn
-        self.fn_else = fn_else
-        self.prob = prob
-    def forward(self, x):
-        fn = self.fn if random() < self.prob else self.fn_else
-        return fn(x)
 
 class Residual(nn.Module):
     def __init__(self, fn):

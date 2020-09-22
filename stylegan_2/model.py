@@ -1,5 +1,6 @@
 import torch
 import math
+import copy
 from torch import nn
 import torch.nn.functional as F
 from helpers import Residual, Rezero, Flatten
@@ -223,7 +224,8 @@ class Generator(nn.Module):
         self.no_const = no_const
 
         if no_const:
-            self.to_initial_block = nn.ConvTranspose2d(latent_dim, init_channels, 4, 1, 0, bias=False)
+            self.initializer = self.make_initializer(latent_dim)
+            self.to_initial_block = self.make_initial_block(latent_dim, init_channels)
         else:
             self.initial_block = nn.Parameter(torch.randn((1, init_channels, 4, 4)))
 
@@ -251,13 +253,30 @@ class Generator(nn.Module):
 
             self.blocks.append(block)
 
-    def forward(self, styles, input_noise):
+    def make_initializer(self, latent_dim):
+        layers = []
+        layers.append(nn.Linear(1024, latent_dim))
+        layers.append(nn.ReLU())
+        layers.append(nn.Linear(latent_dim , latent_dim))
+        layers.append(nn.ReLU())
+        layers.append(nn.Linear(latent_dim, latent_dim))
+        layers.append(nn.ReLU())
+        return nn.Sequential(*layers)
+
+    def make_initial_block(self, latent_dim, init_channels):
+        layers = []
+        layers.append(nn.Upsample(scale_factor=2, mode='nearest'))
+        layers.append(nn.ConvTranspose2d(latent_dim, init_channels, 3, stride=3, padding=1, bias=False))
+        return nn.Sequential(*layers)
+
+    def forward(self, styles, input_noise, feature_vector=None):
         batch_size = styles.shape[0]
         image_size = self.image_size
 
         if self.no_const:
-            avg_style = styles.mean(dim=1)[:, :, None, None]
-            x = self.to_initial_block(avg_style)
+            x = self.initializer(feature_vector)
+            x = torch.reshape(x, (batch_size, -1, 1, 1))
+            x = self.to_initial_block(x)
         else:
             x = self.initial_block.expand(batch_size, -1, -1, -1)
 
@@ -273,10 +292,12 @@ class Generator(nn.Module):
         return rgb
 
 class Discriminator(nn.Module):
-    def __init__(self, image_size, network_capacity=16, fq_layers=[], fq_dict_size=256, attn_layers=[], transparent=False, fmap_max=512):
+    def __init__(self, image_size, network_capacity=16, fq_layers=[], fq_dict_size=256, attn_layers=[], transparent=False, fmap_max=512, no_const=False):
         super().__init__()
         num_layers = int(math.log2(image_size) - 1)
         num_init_filters = 3 if not transparent else 4
+        self.no_const = no_const
+
 
         blocks = []
         filters = [num_init_filters] + [(64) * (2 ** i) for i in range(num_layers + 1)]
@@ -310,25 +331,35 @@ class Discriminator(nn.Module):
         self.quantize_blocks = nn.ModuleList(quantize_blocks)
 
         chan_last = filters[-1]
-        latent_dim = 2 * 2 * chan_last
+        latent_dim = chan_last
 
         self.final_conv = nn.Conv2d(chan_last, chan_last, 3, padding=1)
         self.flatten = Flatten()
-        self.to_logit = self.make_classifier(latent_dim)
+        if no_const:
+          self.feature_mixer = self.make_feature_mixer(latent_dim)
+        self.final = self.make_classifier(latent_dim)
         self.to_logit = nn.Linear(latent_dim, 1)
 
     def make_classifier(self, latent_dim):
         layers = []
         layers.append(nn.Linear(latent_dim, latent_dim))
         layers.append(nn.ReLU())
-        layers.append(minibatch_std_concat_layer(averaging='all'))
-        layers.append(nn.Linear(latent_dim + 1, latent_dim))
-        layers.append(nn.ReLU())
-        layers.append(nn.Linear(latent_dim, latent_dim))
+        #layers.append(minibatch_std_concat_layer(averaging='all'))
+        #layers.append(nn.Linear(latent_dim + 1, latent_dim))
+        #layers.append(nn.ReLU())
         return nn.Sequential(*layers)
 
 
-    def forward(self, x):
+    def make_feature_mixer(self, latent_dim):
+        layers = []
+        layers.append(nn.Linear(latent_dim*4 + 1024, latent_dim))
+        layers.append(nn.ReLU())
+        layers.append(nn.Linear(latent_dim, latent_dim))
+        layers.append(nn.ReLU())
+        return nn.Sequential(*layers)
+
+
+    def forward(self, x, feature_vector=None):
         b, *_ = x.shape
 
         quantize_loss = torch.zeros(1).to(x)
@@ -342,11 +373,17 @@ class Discriminator(nn.Module):
             if q_block is not None:
                 x, loss = q_block(x)
                 quantize_loss += loss
-
         x = self.final_conv(x)
-        x = self.flatten(x)
-        x = self.to_logit(x)
-        return x.squeeze(), quantize_loss
+        y = self.flatten(x)
+
+        if self.no_const:
+          y = torch.cat([y, feature_vector], dim=1)
+          y = self.feature_mixer(y)
+
+        y = self.final(y)
+        y = self.to_logit(y)
+        
+        return y.squeeze(), quantize_loss
 
 
 def main():

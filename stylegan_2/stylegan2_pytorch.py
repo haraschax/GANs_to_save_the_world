@@ -1,5 +1,3 @@
-import sys
-import math
 import json
 from tqdm import tqdm
 from math import floor, log2
@@ -16,18 +14,15 @@ from torch.utils import data
 import torch.nn.functional as F
 
 from adamp import AdamP
-from torch.autograd import grad as torch_grad
 
 import torchvision
 from torchvision import transforms
 
-from vector_quantize_pytorch import VectorQuantize
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from PIL import Image
 from pathlib import Path
-from dataloader import get_custom_tile
-from helpers import RandomApply, cast_list, EMA, set_requires_grad, cycle, \
+from road_dataloader import Dataset
+from helpers import cast_list, EMA, set_requires_grad, cycle, \
                     default, loss_backwards, noise_list, mixed_list, image_noise, \
                     latent_to_w, styles_def_to_tensor, gradient_penalty, raise_if_nan, \
                     noise, evaluate_in_chunks, calc_pl_lengths, is_empty
@@ -44,104 +39,7 @@ num_cores = multiprocessing.cpu_count()
 EXTS = ['jpg', 'jpeg', 'png']
 EPS = 1e-8
 
-# dataset
 
-def convert_rgb_to_transparent(image):
-    if image.mode == 'RGB':
-        return image.convert('RGBA')
-    return image
-
-def convert_transparent_to_rgb(image):
-    if image.mode == 'RGBA':
-        return image.convert('RGB')
-    return image
-
-class expand_greyscale(object):
-    def __init__(self, transparent):
-        self.transparent = transparent
-
-    def __call__(self, tensor):
-        channels = tensor.shape[0]
-        num_target_channels = 4 if self.transparent else 3
-
-        if channels == num_target_channels:
-            return tensor
-
-        alpha = None
-        if channels == 1:
-            color = tensor.expand(3, -1, -1)
-        elif channels == 2:
-            color = tensor[:1].expand(3, -1, -1)
-            alpha = tensor[1:]
-        else:
-            raise Exception(f'image with invalid number of channels given {channels}')
-
-        if alpha is None and self.transparent:
-            alpha = torch.ones(1, *tensor.shape[1:], device=tensor.device)
-
-        return color if not self.transparent else torch.cat((color, alpha))
-
-def resize_to_minimum_size(min_size, image):
-    if max(*image.size) < min_size:
-        return torchvision.transforms.functional.resize(image, min_size)
-    return image
-
-
-import cv2
-from xx.uncommon.cache import cache_gen
-from xx.uncommon.utils import tensor_to_frames
-
-
-class Dataset(data.Dataset):
-    def __init__(self, folder, image_size, transparent=False,
-                 aug_prob=0., max_zoom=8, size=1000000):
-        super().__init__()
-        self.size = size
-        self.samples = np.random.uniform(0.0, 1.0, size=(self.size, 3))
-        self.samples[:,2] = np.floor(max_zoom*self.samples[:,2]) + 1.0
-        self.image_size = image_size
-
-        import cv2
-        from xx.uncommon.cache import cache_gen
-        from xx.uncommon.utils import tensor_to_frames
-        import tensorflow as tf
-        print(tf.__version__)
-
-        # Set CPU as available physical device
-        my_devices = tf.config.experimental.list_physical_devices(device_type='CPU')
-        tf.config.experimental.set_visible_devices(devices= my_devices, device_type='CPU')
-        tf.config.set_visible_devices([], 'GPU')
-        self.g = cache_gen('/raid.nvme/caches/roll_calib/train', shuffle_size=50000)
-        self.imgs = tensor_to_frames(next(self.g)[0]['input_imgs'].numpy())
-        self.in_batch_idx = 0
-        convert_image_fn = convert_transparent_to_rgb if not transparent else convert_rgb_to_transparent
-        num_channels = 3 if not transparent else 4
-
-        self.transform = transforms.Compose([
-            transforms.Lambda(convert_image_fn),
-            transforms.Lambda(partial(resize_to_minimum_size, image_size)),
-            transforms.Resize(image_size),
-            RandomApply(aug_prob, transforms.RandomResizedCrop(image_size, scale=(0.5, 1.0), ratio=(0.98, 1.02)), transforms.CenterCrop(image_size)),
-            transforms.ToTensor(),
-            transforms.Lambda(expand_greyscale(transparent))
-        ])
-
-    def __len__(self):
-        return len(self.samples)
-
-    def __getitem__(self, idx):
-        if self.in_batch_idx == 512:
-            self.in_batch_idx = 0
-            self.imgs = tensor_to_frames(next(self.g)[0]['input_imgs'].numpy())
-        img = cv2.cvtColor(self.imgs[self.in_batch_idx],cv2.COLOR_YUV2RGB_I420)[:,::2]
-        img = Image.fromarray(img)
-        self.in_batch_idx += 1
-
-        '''
-        sample = self.samples[idx]
-        img = Image.fromarray(get_custom_tile(*sample))
-        '''
-        return self.transform(img)
 
 # augmentations
 
@@ -167,7 +65,7 @@ class AugWrapper(nn.Module):
         super().__init__()
         self.D = D
 
-    def forward(self, images, prob = 0., detach = False):
+    def forward(self, images, prob = 0., detach = False, feature_vector=None):
         if random() < prob:
             random_scale = random_float(0.75, 0.95)
             images = random_hflip(images, prob=0.5)
@@ -176,7 +74,7 @@ class AugWrapper(nn.Module):
         if detach:
             images.detach_()
 
-        return self.D(images)
+        return self.D(images, feature_vector)
 
 
 class StyleGAN2(nn.Module):
@@ -191,7 +89,8 @@ class StyleGAN2(nn.Module):
 
         self.S = StyleVectorizer(latent_dim, style_depth, lr_mul = lr_mlp)
         self.G = Generator(image_size, latent_dim, network_capacity, transparent=transparent, attn_layers=attn_layers, no_const=no_const, fmap_max=fmap_max)
-        self.D = Discriminator(image_size, network_capacity, fq_layers=fq_layers, fq_dict_size=fq_dict_size, attn_layers=attn_layers, transparent=transparent, fmap_max=fmap_max)
+        self.D = Discriminator(image_size, network_capacity, fq_layers=fq_layers, fq_dict_size=fq_dict_size, attn_layers=attn_layers,
+                               transparent=transparent, fmap_max=fmap_max, no_const=no_const)
 
         self.num_layers = self.G.num_layers
         self.SE = StyleVectorizer(latent_dim, style_depth, lr_mul = lr_mlp)
@@ -380,6 +279,9 @@ class Trainer():
 
         backwards = partial(loss_backwards, self.fp16)
 
+        test_image_batch, test_feature_vector_batch = next(self.loader)
+        self.test_feature_vector_batch = test_feature_vector_batch.cuda().clone().detach()
+
         if self.GAN.D_cl is not None:
             self.GAN.D_opt.zero_grad()
 
@@ -414,16 +316,22 @@ class Trainer():
             get_latents_fn = mixed_list if random() < self.mixed_prob else noise_list
             style = get_latents_fn(batch_size, num_layers, latent_dim)
             noise = image_noise(batch_size, image_size)
+            image_batch, feature_vector_batch = next(self.loader)
+            image_batch = image_batch.cuda()
+            feature_vector_batch = feature_vector_batch.cuda()
+            
 
             w_space = latent_to_w(self.GAN.S, style)
             w_styles = styles_def_to_tensor(w_space)
 
-            generated_images = self.GAN.G(w_styles, noise)
-            fake_output, fake_q_loss = self.GAN.D_aug(generated_images.clone().detach(), detach=True, prob=aug_prob)
+            generated_images = self.GAN.G(w_styles, noise, feature_vector=feature_vector_batch)
+            fake_output, fake_q_loss = self.GAN.D_aug(generated_images.clone().detach(), detach=True, prob=aug_prob, feature_vector=feature_vector_batch)
 
-            image_batch = next(self.loader).cuda()
+            image_batch, feature_vector_batch = next(self.loader)
+            image_batch = image_batch.cuda()
+            feature_vector_batch = feature_vector_batch.cuda()
             image_batch.requires_grad_()
-            real_output, real_q_loss = self.GAN.D_aug(image_batch, prob=aug_prob)
+            real_output, real_q_loss = self.GAN.D_aug(image_batch, prob=aug_prob, feature_vector=feature_vector_batch)
 
             divergence = (F.relu(1 + real_output) + F.relu(1 - fake_output)).mean()
             disc_loss = divergence
@@ -453,12 +361,15 @@ class Trainer():
         for i in range(self.gradient_accumulate_every):
             style = get_latents_fn(batch_size, num_layers, latent_dim)
             noise = image_noise(batch_size, image_size)
+            image_batch, feature_vector_batch = next(self.loader)
+            image_batch = image_batch.cuda()
+            feature_vector_batch = feature_vector_batch.cuda()
 
             w_space = latent_to_w(self.GAN.S, style)
             w_styles = styles_def_to_tensor(w_space)
 
-            generated_images = self.GAN.G(w_styles, noise)
-            fake_output, _ = self.GAN.D_aug(generated_images, prob=aug_prob)
+            generated_images = self.GAN.G(w_styles, noise, feature_vector=feature_vector_batch)
+            fake_output, _ = self.GAN.D_aug(generated_images, prob=aug_prob, feature_vector=feature_vector_batch)
             loss = fake_output.mean()
             gen_loss = loss
 
@@ -558,7 +469,6 @@ class Trainer():
 
     @torch.no_grad()
     def generate_truncated(self, S, G, latent_dim, style, noi, trunc_psi=0.75, num_image_tiles=8):
-
         if self.av is None:
             z = noise(2000, latent_dim)
             samples = evaluate_in_chunks(self.batch_size, S, z).cpu().numpy()
@@ -573,7 +483,7 @@ class Trainer():
             w_space.append((tmp, num_layers))
 
         w_styles = styles_def_to_tensor(w_space)
-        generated_images = evaluate_in_chunks(self.batch_size, G, w_styles, noi)
+        generated_images = evaluate_in_chunks(self.batch_size, G, w_styles, noi, self.test_feature_vector_batch[:noi.shape[0]])
         return generated_images.clamp_(0., 1.)
 
     @torch.no_grad()
