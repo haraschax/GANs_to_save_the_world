@@ -344,9 +344,9 @@ class Discriminator(nn.Module):
         layers = []
         layers.append(nn.Linear(latent_dim, latent_dim))
         layers.append(nn.ReLU())
-        #layers.append(minibatch_std_concat_layer(averaging='all'))
-        #layers.append(nn.Linear(latent_dim + 1, latent_dim))
-        #layers.append(nn.ReLU())
+        layers.append(minibatch_std_concat_layer(averaging='all'))
+        layers.append(nn.Linear(latent_dim + 1, latent_dim))
+        layers.append(nn.ReLU())
         return nn.Sequential(*layers)
 
 

@@ -1,4 +1,5 @@
 import json
+from time import time
 from tqdm import tqdm
 from math import floor, log2
 from random import random
@@ -167,6 +168,7 @@ class Trainer():
                 fq_dict_size = 256, attn_layers = [], no_const=False, aug_prob = 0., dataset_aug_prob = 0., *args, **kwargs):
         self.GAN_params = [args, kwargs]
         self.GAN = None
+        self.gpu = kwargs['gpu']
 
         self.name = name
         self.results_dir = Path(results_dir)
@@ -254,9 +256,21 @@ class Trainer():
         else:
             sampler = None
         self.loader = cycle(data.DataLoader(self.dataset, sampler=sampler, batch_size=self.batch_size, drop_last=True, pin_memory=True))
+        i = 0
+        self.test_feature_vector_batch = torch.zeros((64, 1024))
+        self.test_image_batch = torch.zeros((64, 3, self.image_size, self.image_size))
+        while i < 64:
+          test_image_batch, test_feature_vector_batch = next(self.loader)
+          self.test_feature_vector_batch[i:min(64, i + test_feature_vector_batch.shape[0])] = test_feature_vector_batch.cuda()[:min(64, i + test_feature_vector_batch.shape[0]) - i]
+          self.test_image_batch[i:min(64, i + test_feature_vector_batch.shape[0])] = test_image_batch.cuda()[:min(64, i + test_feature_vector_batch.shape[0]) - i]
+          i += test_feature_vector_batch.shape[0]
+        ext = 'jpg' if not self.transparent else 'png'
+        torchvision.utils.save_image(self.test_image_batch, str(self.results_dir / self.name / f'test_img.{ext}'), nrow=8)
+
 
     def train(self):
         assert self.loader is not None, 'You must first initialize the data source with `.set_data_src(<folder of images>)`'
+        t0 = time()
         
         if self.GAN is None:
             self.init_GAN()
@@ -279,8 +293,6 @@ class Trainer():
 
         backwards = partial(loss_backwards, self.fp16)
 
-        test_image_batch, test_feature_vector_batch = next(self.loader)
-        self.test_feature_vector_batch = test_feature_vector_batch.cuda().clone().detach()
 
         if self.GAN.D_cl is not None:
             self.GAN.D_opt.zero_grad()
@@ -312,12 +324,13 @@ class Trainer():
         avg_pl_length = self.pl_mean
         self.GAN.D_opt.zero_grad()
 
+        #print('beginning took ', time() - t0)
+        t0 = time()
         for i in range(self.gradient_accumulate_every):
             get_latents_fn = mixed_list if random() < self.mixed_prob else noise_list
             style = get_latents_fn(batch_size, num_layers, latent_dim)
             noise = image_noise(batch_size, image_size)
             image_batch, feature_vector_batch = next(self.loader)
-            image_batch = image_batch.cuda()
             feature_vector_batch = feature_vector_batch.cuda()
             
 
@@ -354,6 +367,8 @@ class Trainer():
 
         self.d_loss = float(total_disc_loss)
         self.GAN.D_opt.step()
+        #print('training disc took ', time() - t0)
+        t0 = time()
 
         # train generator
 
@@ -362,7 +377,6 @@ class Trainer():
             style = get_latents_fn(batch_size, num_layers, latent_dim)
             noise = image_noise(batch_size, image_size)
             image_batch, feature_vector_batch = next(self.loader)
-            image_batch = image_batch.cuda()
             feature_vector_batch = feature_vector_batch.cuda()
 
             w_space = latent_to_w(self.GAN.S, style)
@@ -390,6 +404,8 @@ class Trainer():
 
         self.g_loss = float(total_gen_loss)
         self.GAN.G_opt.step()
+        #print('training gen took ', time() - t0)
+        t0 = time()
 
         # calculate moving averages
 
@@ -421,6 +437,7 @@ class Trainer():
             self.evaluate(floor(self.steps / 1000))
 
         self.av = None
+        #print('rest took', time() - t0)
 
     @torch.no_grad()
     def evaluate(self, num=0, num_image_tiles=8, trunc=1.0):
@@ -562,7 +579,8 @@ class Trainer():
 
         self.steps = name * self.save_every
 
-        load_data = torch.load(self.model_name(name))
+        map_location = {'cuda:%d' % 0: 'cuda:%d' % self.gpu}
+        load_data = torch.load(self.model_name(name), map_location=map_location)
 
         # make backwards compatible
         if 'GAN' not in load_data:

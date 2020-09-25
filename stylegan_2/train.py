@@ -1,5 +1,9 @@
 #!/usr/bin/env python
 import os
+os.environ['MKL_NUM_THREADS'] = '1'
+os.environ['NUMEXPR_NUM_THREADS'] = '1'
+os.environ['OMP_NUM_THREADS'] = '1'
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
 import argparse
 import torch
 import torch.multiprocessing as mp
@@ -23,13 +27,13 @@ def train_from_folder(
     results_dir='./results',
     models_dir='./models', 
     name='default',
-    new=True,
+    new=False,
     load_from=-1,
-    image_size = 512,
-    network_capacity = 16,
-    transparent = False,
-    batch_size = 5,
-    gradient_accumulate_every = 6,
+    image_size=256,
+    network_capacity=16,
+    transparent=False,
+    batch_size = 16,
+    gradient_accumulate_every = 3,
     num_train_steps = 150000,
     learning_rate = 2e-4,
     lr_mlp = 0.1,
@@ -85,7 +89,6 @@ def train_from_folder(
     torch.manual_seed(0)
     torch.cuda.set_device(gpu)
 
-
     if not new:
         model.load(load_from)
     else:
@@ -111,7 +114,7 @@ def train_from_folder(
 
     for _ in tqdm(range(num_train_steps - model.steps), mininterval=10., desc=f'{name}<{data}>'):
         model.train()#retry_call(model.train, tries=3, exceptions=NanException)
-        if _ % 50 == 0 and gpu == 0:
+        if _ % 5 == 0 and gpu == 0:
             model.print_log()
 
 if __name__ == "__main__":
