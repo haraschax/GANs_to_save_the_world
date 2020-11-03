@@ -338,7 +338,7 @@ class Discriminator(nn.Module):
         if no_const:
           self.feature_mixer = self.make_feature_mixer(latent_dim)
         #self.final = self.make_classifier(latent_dim)
-        self.to_logit = nn.Linear(latent_dim, 1)
+        self.to_logit = make_to_logit(latent_dim, 1)
 
     def make_classifier(self, latent_dim):
         layers = []
@@ -356,6 +356,18 @@ class Discriminator(nn.Module):
         layers.append(nn.ReLU())
         layers.append(nn.Linear(latent_dim, latent_dim))
         layers.append(nn.ReLU())
+        return nn.Sequential(*layers)
+
+
+    def make_feature_mixer(self, latent_dim):
+        layers = []
+        layers.append(nn.Linear(latent_dim, latent_dim))
+        layers.append(nn.ReLU())
+        layers.append(nn.Linear(latent_dim, latent_dim))
+        layers.append(nn.ReLU())
+        layers.append(nn.Linear(latent_dim, latent_dim))
+        layers.append(nn.ReLU())
+        layers.append(nn.Linear(latent_dim, 1))
         return nn.Sequential(*layers)
 
 
@@ -382,7 +394,7 @@ class Discriminator(nn.Module):
 
         #y = self.final(y)
         y = self.to_logit(y)
-        
+
         return y.squeeze(), quantize_loss
 
 
