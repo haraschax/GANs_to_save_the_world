@@ -337,7 +337,7 @@ class Discriminator(nn.Module):
         self.flatten = Flatten()
         if no_const:
           self.feature_mixer = self.make_feature_mixer(latent_dim)
-        self.final = self.make_classifier(latent_dim)
+        #self.final = self.make_classifier(latent_dim)
         self.to_logit = nn.Linear(latent_dim, 1)
 
     def make_classifier(self, latent_dim):
@@ -380,7 +380,7 @@ class Discriminator(nn.Module):
           y = torch.cat([y, feature_vector], dim=1)
           y = self.feature_mixer(y)
 
-        y = self.final(y)
+        #y = self.final(y)
         y = self.to_logit(y)
         
         return y.squeeze(), quantize_loss

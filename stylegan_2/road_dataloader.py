@@ -70,12 +70,12 @@ class expand_greyscale(object):
         return color if not self.transparent else torch.cat((color, alpha))
 
 
-def q_loader(i, q, image_size, transparent=False):
+def q_loader(i, q, image_size, aug_prob, transparent=False):
     # Set CPU as available physical device
     my_devices = tf.config.experimental.list_physical_devices(device_type='CPU')
     tf.config.experimental.set_visible_devices(devices=my_devices, device_type='CPU')
     tf.config.set_visible_devices([], 'GPU')
-    g = cache_gen('/raid.nvme/caches/unvision/train', shuffle_size=2, shuffle_files=True)
+    g = cache_gen('/raid.nvme/caches/unvision2/train', shuffle_size=2, shuffle_files=True)
     in_batch_idx = 0
     convert_image_fn = convert_transparent_to_rgb if not transparent else convert_rgb_to_transparent
     num_channels = 3 if not transparent else 4
@@ -84,19 +84,15 @@ def q_loader(i, q, image_size, transparent=False):
         #transforms.Lambda(convert_image_fn),
         #transforms.Lambda(partial(resize_to_minimum_size, image_size)),
         transforms.Resize(image_size),
-        #RandomApply(aug_prob, transforms.RandomResizedCrop(image_size, scale=(0.5, 1.0), ratio=(0.98, 1.02)), transforms.CenterCrop(image_size)),
+        RandomApply(aug_prob, transforms.RandomResizedCrop(image_size, scale=(0.5, 1.0), ratio=(0.98, 1.02)), transforms.CenterCrop(image_size)),
         transforms.ToTensor()
         #transforms.Lambda(expand_greyscale(transparent))
     ])
     while True:
         if in_batch_idx == 0:
             a = next(g)
-            imgs_raw = a[1]['img'].numpy()
-            imgs = np.zeros((512, 512,512,3), dtype=np.uint8)
-            imgs[:,:256,:,:] = ((imgs_raw[:, :, :, :3] + 1.0)*128.0).astype(np.uint8)
-            imgs[:,256:,:,:] = ((imgs_raw[:, :, :, 3:] + 1.0)*128.0).astype(np.uint8)
-            del imgs_raw
-            features = a[0]['input_features'].numpy()
+            imgs = a[1]['img'].numpy()
+            features = a[0]['features'].numpy()
             del a
 
         feature_vector = features[in_batch_idx]
@@ -123,7 +119,7 @@ class Dataset(data.Dataset):
 
         self.q = multiprocessing.Queue(256)
         for i in trange(workers, desc="starting processes"):
-            p = multiprocessing.Process(target=q_loader, args=(i, self.q, image_size, transparent))
+            p = multiprocessing.Process(target=q_loader, args=(i, self.q, image_size, aug_prob, transparent))
             p.daemon = True
             p.start()
 

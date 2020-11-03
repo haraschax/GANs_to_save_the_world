@@ -288,7 +288,7 @@ class Trainer():
         aug_prob = self.aug_prob
 
         apply_gradient_penalty = self.steps % 4 == 0
-        apply_path_penalty = False#self.steps > 5000 and self.steps % 32 == 0
+        apply_path_penalty = False #self.steps % 32 == 0
         apply_cl_reg_to_generated = self.steps > 20000
 
         backwards = partial(loss_backwards, self.fp16)
