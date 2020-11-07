@@ -19,6 +19,7 @@ class EMA():
     def __init__(self, beta):
         super().__init__()
         self.beta = beta
+
     def update_average(self, old, new):
         if old is None:
             return new
@@ -32,6 +33,7 @@ class Residual(nn.Module):
     def __init__(self, fn):
         super().__init__()
         self.fn = fn
+
     def forward(self, x):
         return self.fn(x) + x
 
@@ -40,6 +42,7 @@ class Rezero(nn.Module):
         super().__init__()
         self.fn = fn
         self.g = nn.Parameter(torch.zeros(1))
+
     def forward(self, x):
         return self.fn(x) * self.g
 
@@ -47,6 +50,7 @@ class PermuteToFrom(nn.Module):
     def __init__(self, fn):
         super().__init__()
         self.fn = fn
+
     def forward(self, x):
         x = x.permute(0, 2, 3, 1)
         out, loss = self.fn(x)
@@ -105,16 +109,6 @@ def calc_pl_lengths(styles, images):
 def noise(n, latent_dim):
     return torch.randn(n, latent_dim).cuda()
 
-def noise_list(n, layers, latent_dim):
-    return [(noise(n, latent_dim), layers)]
-
-def mixed_list(n, layers, latent_dim):
-    tt = int(torch.rand(()).numpy() * layers)
-    return noise_list(n, tt, latent_dim) + noise_list(n, layers - tt, latent_dim)
-
-def latent_to_w(style_vectorizer, latent_descr):
-    return [(style_vectorizer(z), num_layers) for z, num_layers in latent_descr]
-
 def image_noise(n, im_size):
     return torch.FloatTensor(n, im_size, im_size, 1).uniform_(0., 1.).cuda()
 
@@ -124,9 +118,6 @@ def evaluate_in_chunks(max_batch_size, model, *args):
     if len(chunked_outputs) == 1:
         return chunked_outputs[0]
     return torch.cat(chunked_outputs, dim=0)
-
-def styles_def_to_tensor(styles_def):
-    return torch.cat([t[:, None, :].expand(-1, n, -1) for t, n in styles_def], dim=1)
 
 def set_requires_grad(model, bool_val):
     for p in model.parameters():

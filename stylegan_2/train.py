@@ -11,12 +11,12 @@ from stylegan2_pytorch import Trainer
 from datetime import datetime
 
 if __name__ == "__main__":
-    gpu_count = torch.cuda.device_count()
-    parser = argparse.ArgumentParser()
+    gpu_count=torch.cuda.device_count()
+    parser=argparse.ArgumentParser()
     parser.add_argument('-g', '--gpus', default=gpu_count, type=int)
     parser.add_argument('-n', '--nodes', default=1, type=int)
     parser.add_argument('-m', '--master', default='localhost', type=str)
-    args = parser.parse_args()
+    args=parser.parse_args()
 
 
 def train_from_folder(
@@ -30,58 +30,58 @@ def train_from_folder(
     image_size=512,
     network_capacity=16,
     transparent=False,
-    batch_size = 4,
-    gradient_accumulate_every = 3,
-    num_train_steps = 150000,
-    learning_rate = 1e-4,
-    lr_mlp = 0.1,
-    ttur_mult = 1.5,
-    num_workers =  None,
-    save_every = 1000,
-    generate = False,
-    generate_interpolation = False,
-    save_frames = False,
-    num_image_tiles = 8,
-    trunc_psi = 0.75,
-    fp16 = False,
-    cl_reg = False,
-    fq_layers = [],
-    fq_dict_size = 256,
-    attn_layers = [],
-    no_const = True,
-    aug_prob = 0.,
-    dataset_aug_prob = 0.,
+    batch_size=4,
+    gradient_accumulate_every=3,
+    num_train_steps=150000,
+    learning_rate=1e-4,
+    lr_mlp=0.1,
+    ttur_mult=1.5,
+    num_workers= None,
+    save_every=1000,
+    generate=False,
+    generate_interpolation=False,
+    save_frames=False,
+    num_image_tiles=8,
+    trunc_psi=0.75,
+    fp16=False,
+    cl_reg=False,
+    fq_layers=[],
+    fq_dict_size=256,
+    attn_layers=[],
+    use_feats=True,
+    aug_prob=0.,
+    dataset_aug_prob=0.,
     using_ddp=True
 ):
     print('INITTING TRAINER')
     model = Trainer(
-        name,        
+        name,
         results_dir,
         models_dir,
-        batch_size = batch_size,
-        gradient_accumulate_every = gradient_accumulate_every,
-        image_size = image_size,
-        network_capacity = network_capacity,
-        transparent = transparent,
-        lr = learning_rate,
-        lr_mlp = lr_mlp,
-        ttur_mult = ttur_mult,
-        num_workers = num_workers,
-        save_every = save_every,
-        trunc_psi = trunc_psi,
-        fp16 = fp16,
-        cl_reg = cl_reg,
-        fq_layers = fq_layers,
-        fq_dict_size = fq_dict_size,
-        attn_layers = attn_layers,
-        no_const = no_const,
-        aug_prob = aug_prob,
-        dataset_aug_prob = dataset_aug_prob,
+        batch_size=batch_size,
+        gradient_accumulate_every=gradient_accumulate_every,
+        image_size=image_size,
+        network_capacity=network_capacity,
+        transparent=transparent,
+        lr=learning_rate,
+        lr_mlp=lr_mlp,
+        ttur_mult=ttur_mult,
+        num_workers=num_workers,
+        save_every=save_every,
+        trunc_psi=trunc_psi,
+        fp16=fp16,
+        cl_reg=cl_reg,
+        fq_layers=fq_layers,
+        fq_dict_size=fq_dict_size,
+        attn_layers=attn_layers,
+        use_feats=use_feats,
+        aug_prob=aug_prob,
+        dataset_aug_prob=dataset_aug_prob,
         using_ddp=using_ddp,
         gpu=gpu
     )
     if using_ddp:
-        world_size = torch.cuda.device_count()
+        world_size=torch.cuda.device_count()
         torch.distributed.init_process_group(backend='nccl', rank=gpu, world_size=world_size)
     else:
         gpu = 0
