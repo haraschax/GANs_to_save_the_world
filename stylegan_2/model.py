@@ -87,7 +87,8 @@ class StyleVectorizer(nn.Module):
 
     def forward(self, x):
         x = F.normalize(x, dim=1)
-        return self.net(x)
+        x = self.net(x)
+        return x
 
 class RGBBlock(nn.Module):
     def __init__(self, latent_dim, input_channel, upsample, rgba = False):
@@ -338,7 +339,7 @@ class Discriminator(nn.Module):
         if no_const:
           self.feature_mixer = self.make_feature_mixer(latent_dim)
         #self.final = self.make_classifier(latent_dim)
-        self.to_logit = make_to_logit(latent_dim, 1)
+        self.to_logit = self.make_to_logit(latent_dim)
 
     def make_classifier(self, latent_dim):
         layers = []
@@ -359,7 +360,7 @@ class Discriminator(nn.Module):
         return nn.Sequential(*layers)
 
 
-    def make_feature_mixer(self, latent_dim):
+    def make_to_logit(self, latent_dim):
         layers = []
         layers.append(nn.Linear(latent_dim, latent_dim))
         layers.append(nn.ReLU())
