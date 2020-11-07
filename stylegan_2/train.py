@@ -1,14 +1,11 @@
 #!/usr/bin/env python
 import os
-os.environ['MKL_NUM_THREADS'] = '1'
-os.environ['NUMEXPR_NUM_THREADS'] = '1'
-os.environ['OMP_NUM_THREADS'] = '1'
-os.environ['OPENBLAS_NUM_THREADS'] = '1'
 import argparse
 import torch
 import torch.multiprocessing as mp
 from tqdm import tqdm
 from helpers import NanException
+import tensorflow as tf
 from stylegan2_pytorch import Trainer
 
 from datetime import datetime
@@ -17,6 +14,7 @@ if __name__ == "__main__":
     gpu_count = torch.cuda.device_count()
     parser = argparse.ArgumentParser()
     parser.add_argument('-g', '--gpus', default=gpu_count, type=int)
+    parser.add_argument('-n', '--nodes', default=1, type=int)
     parser.add_argument('-m', '--master', default='localhost', type=str)
     args = parser.parse_args()
 
@@ -33,7 +31,7 @@ def train_from_folder(
     network_capacity=16,
     transparent=False,
     batch_size = 4,
-    gradient_accumulate_every = 8,
+    gradient_accumulate_every = 3,
     num_train_steps = 150000,
     learning_rate = 1e-4,
     lr_mlp = 0.1,
@@ -53,8 +51,9 @@ def train_from_folder(
     no_const = True,
     aug_prob = 0.,
     dataset_aug_prob = 0.,
+    using_ddp=True
 ):
-    using_ddp = True
+    print('INITTING TRAINER')
     model = Trainer(
         name,        
         results_dir,
@@ -110,8 +109,9 @@ def train_from_folder(
         print(f'interpolation generated at {results_dir}/{name}/{samples_name}')
         return
 
+    print('LOADING DATA')
     model.set_data_src(data, using_ddp=using_ddp)
-
+    print('TRAINING START')
     for _ in tqdm(range(num_train_steps - model.steps), mininterval=10., desc=f'{name}<{data}>'):
         model.train()#retry_call(model.train, tries=3, exceptions=NanException)
         if _ % 5 == 0 and gpu == 0:
@@ -121,9 +121,9 @@ if __name__ == "__main__":
   #  fire.Fire(train_from_folder)
     world_size = torch.cuda.device_count()
     print(world_size)
-    if False:#args.gpus == 1 and args.nodes == 1:
+    if args.gpus == 1 and args.nodes == 1:
         print("running single process")
-        train_from_folder(None, args)
+        train_from_folder(0, using_ddp=False)
     else:
         os.environ['MASTER_ADDR'] = args.master
         os.environ['MASTER_PORT'] = '12355'
