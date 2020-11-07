@@ -111,6 +111,7 @@ def train_from_folder(
 
     print('LOADING DATA')
     model.set_data_src(data, using_ddp=using_ddp)
+    model.set_priority()
     print('TRAINING START')
     for _ in tqdm(range(num_train_steps - model.steps), mininterval=10., desc=f'{name}<{data}>'):
         model.train()#retry_call(model.train, tries=3, exceptions=NanException)

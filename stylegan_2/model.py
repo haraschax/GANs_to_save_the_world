@@ -285,19 +285,19 @@ class Generator(nn.Module):
         layers.append(nn.ConvTranspose2d(latent_dim, init_channels, 3, stride=3, padding=1, bias=False))
         return nn.Sequential(*layers)
 
-    def forward(self, w_space, input_noise):
-        batch_size = w_space.shape[0]
-        image_size = self.image_size
+    def forward(self, styles, input_noise):
+        batch_size = styles.shape[0]
 
         x = self.initial_block.expand(batch_size, -1, -1, -1)
 
         rgb = None
         x = self.initial_conv(x)
 
-        for block, attn in zip(self.blocks, self.attns):
+        styles = styles.transpose(0, 1)
+        for style, block, attn in zip(styles, self.blocks, self.attns):
             if attn is not None:
                 x = attn(x)
-            x, rgb = block(x, rgb, w_space, input_noise)
+            x, rgb = block(x, rgb, style, input_noise)
 
         return rgb
 

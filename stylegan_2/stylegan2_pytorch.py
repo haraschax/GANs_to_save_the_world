@@ -1,5 +1,5 @@
 import json
-from time import time
+import os
 from tqdm import tqdm
 from math import floor, log2
 from random import random
@@ -267,11 +267,32 @@ class Trainer():
         ext = 'jpg' if not self.transparent else 'png'
         torchvision.utils.save_image(self.test_image_batch, str(self.results_dir / self.name / f'test_img.{ext}'), nrow=8)
 
-    def gen_style(self):
-      return noise(self.batch_size, self.GAN.latent_dim)
+    def gen_styles(self, model, feats):
+      layers = self.GAN.num_layers
+      n = noise(self.batch_size, self.GAN.latent_dim)
+      w_space = self.GAN.S(n, feats)
+      styles = w_space[:,None,:].repeat(1,layers,1)
+      return styles
+
+    def gen_mixed_styles(self, model, feats):
+      layers = self.GAN.num_layers
+      a = self.gen_styles(model, feats)
+      if random() < self.mixed_prob:
+        b = self.gen_styles(model, feats)
+        tt = int(torch.rand(()).numpy() * layers)
+        return torch.cat([a[:, :tt], b[:, tt:]], dim=1)
+      else:
+        return a
+
+
+    def set_priority(self):
+        assert self.loader is not None, 'You must first initialize the data source with `.set_data_src(<folder of images>)`'
+        _ = next(self.loader)
+        self.data = next(self.loader)
+        #os.system("sudo renice -n -5 -p %d" % os.getpid())
+
 
     def train(self):
-        assert self.loader is not None, 'You must first initialize the data source with `.set_data_src(<folder of images>)`'
         if self.GAN is None:
             self.init_GAN()
 
@@ -297,11 +318,10 @@ class Trainer():
                 for i in range(self.gradient_accumulate_every):
                     image_batch, feature_vector_batch = next(self.loader)
 
-                    style = self.gen_style()
-                    w_space = self.GAN.S(style, feature_vector_batch.cuda())
-
+                    styles = self.gen_mixed_styles(self.GAN.S, feature_vector_batch.cuda())
                     img_noise = image_noise(batch_size, image_size)
-                    generated_images = self.GAN.G(w_space, img_noise)
+
+                    generated_images = self.GAN.G(styles, img_noise)
                     self.GAN.D_cl(generated_images.clone().detach(), accumulate=True)
 
             for i in range(self.gradient_accumulate_every):
@@ -319,12 +339,11 @@ class Trainer():
         self.GAN.D_opt.zero_grad()
         for i in range(self.gradient_accumulate_every):
             image_batch, feature_vector_batch = next(self.loader)
-            style = self.gen_style()
 
-            w_space = self.GAN.S(style, feature_vector_batch.cuda())
+            styles = self.gen_mixed_styles(self.GAN.S, feature_vector_batch.cuda())
             img_noise = image_noise(batch_size, image_size)
 
-            generated_images = self.GAN.G(w_space, img_noise)
+            generated_images = self.GAN.G(styles, img_noise)
             fake_output, fake_q_loss = self.GAN.D_aug(generated_images.clone().detach(), detach=True,
                                                       prob=aug_prob, feature_vector=feature_vector_batch)
 
@@ -356,19 +375,17 @@ class Trainer():
         self.GAN.G_opt.zero_grad()
         for i in range(self.gradient_accumulate_every):
             image_batch, feature_vector_batch = next(self.loader)
-            style = self.gen_style()
 
-            w_space = self.GAN.S(style, feature_vector_batch.cuda())
+            styles = self.gen_mixed_styles(self.GAN.S, feature_vector_batch.cuda())
             img_noise = image_noise(batch_size, image_size)
 
-            img_noise = image_noise(batch_size, image_size)
-            generated_images = self.GAN.G(w_space, img_noise)
+            generated_images = self.GAN.G(styles, img_noise)
             fake_output, _ = self.GAN.D_aug(generated_images, prob=aug_prob, feature_vector=feature_vector_batch.cuda())
             loss = fake_output.mean()
             gen_loss = loss
 
             if apply_path_penalty:
-                pl_lengths = calc_pl_lengths(w_space, generated_images)
+                pl_lengths = calc_pl_lengths(styles, generated_images)
                 avg_pl_length = np.mean(pl_lengths.detach().cpu().numpy())
 
                 if not is_empty(self.pl_mean):
@@ -423,56 +440,23 @@ class Trainer():
 
         latent_dim = self.GAN.latent_dim
         image_size = self.GAN.image_size
-        num_layers = self.GAN.num_layers
-
-        # latents and noise
-        latents = noise_list(num_rows ** 2, num_layers, latent_dim)
-        n = image_noise(num_rows ** 2, image_size)
+        noi = image_noise(num_image_tiles ** 2, image_size)
+        latents = noise(num_image_tiles ** 2, latent_dim)
 
         # regular
-        generated_images = self.generate_truncated(self.GAN.S, self.GAN.G, latent_dim, latents, n, trunc_psi=self.trunc_psi)
+        generated_images = self.generate_truncated(self.GAN.S, self.GAN.G, latents, noi)
         torchvision.utils.save_image(generated_images, str(self.results_dir / self.name / f'{str(num)}.{ext}'), nrow=num_rows)
 
         # moving averages
-        generated_images = self.generate_truncated(self.GAN.SE, self.GAN.GE, latent_dim, latents, n, trunc_psi=self.trunc_psi)
+        generated_images = self.generate_truncated(self.GAN.SE, self.GAN.GE, latents, noi)
         torchvision.utils.save_image(generated_images, str(self.results_dir / self.name / f'{str(num)}-ema.{ext}'), nrow=num_rows)
 
-        # mixing regularities
-        def tile(a, dim, n_tile):
-            init_dim = a.size(dim)
-            repeat_idx = [1] * a.dim()
-            repeat_idx[dim] = n_tile
-            a = a.repeat(*(repeat_idx))
-            order_index = torch.LongTensor(np.concatenate([init_dim * np.arange(n_tile) + i for i in range(init_dim)])).cuda()
-            return torch.index_select(a, dim, order_index)
-
-        nn = noise(num_rows, latent_dim)
-        tmp1 = tile(nn, 0, num_rows)
-        tmp2 = nn.repeat(num_rows, 1)
-
-        tt = int(num_layers / 2)
-        mixed_latents = [(tmp1, tt), (tmp2, num_layers - tt)]
-
-        generated_images = self.generate_truncated(self.GAN.SE, self.GAN.GE, latent_dim, mixed_latents, n, trunc_psi=self.trunc_psi)
-        torchvision.utils.save_image(generated_images, str(self.results_dir / self.name / f'{str(num)}-mr.{ext}'), nrow=num_rows)
 
     @torch.no_grad()
-    def generate_truncated(self, S, G, latent_dim, style, noi, trunc_psi=0.75, num_image_tiles=8):
-        if self.av is None:
-            z = noise(2000, latent_dim)
-            samples = evaluate_in_chunks(self.batch_size, S, z, self.test_feature_vector_batch[:noi.shape[0]]).cpu().numpy()
-            self.av = np.mean(samples, axis=0)
-            self.av = np.expand_dims(self.av, axis=0)
-
-        w_space = []
-        for tensor, num_layers in style:
-            tmp = S(tensor)
-            av_torch = torch.from_numpy(self.av).cuda()
-            tmp = trunc_psi * (tmp - av_torch) + av_torch
-            w_space.append((tmp, num_layers))
-
-        w_styles = styles_def_to_tensor(w_space)
-        generated_images = evaluate_in_chunks(self.batch_size, G, w_styles, noi)
+    def generate_truncated(self, S, G, latents, noi, num_image_tiles=8):
+        w_space = evaluate_in_chunks(self.batch_size, S, latents, self.test_feature_vector_batch[:noi.shape[0]])
+        styles = w_space[:,None,:].repeat(1,self.GAN.num_layers,1)
+        generated_images = evaluate_in_chunks(self.batch_size, G, styles, noi)
         return generated_images.clamp_(0., 1.)
 
     @torch.no_grad()
