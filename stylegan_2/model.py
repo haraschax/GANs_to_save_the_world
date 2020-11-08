@@ -223,7 +223,7 @@ class DiscriminatorBlock(nn.Module):
         return x
 
 class Generator(nn.Module):
-    def __init__(self, image_size, latent_dim, network_capacity = 16, transparent = False, attn_layers = [], no_const = False, fmap_max = 512):
+    def __init__(self, image_size, latent_dim, network_capacity = 16, transparent = False, attn_layers = [], fmap_max = 512):
         super().__init__()
         self.image_size = image_size
         self.latent_dim = latent_dim
@@ -239,11 +239,7 @@ class Generator(nn.Module):
         in_out_pairs = zip(filters[:-1], filters[1:])
         self.no_const = no_const
 
-        if no_const:
-            self.initializer = self.make_initializer(latent_dim)
-            self.to_initial_block = self.make_initial_block(latent_dim, init_channels)
-        else:
-            self.initial_block = nn.Parameter(torch.randn((1, init_channels, 4, 4)))
+        self.initial_block = nn.Parameter(torch.randn((1, init_channels, 4, 4)))
 
         self.initial_conv = nn.Conv2d(filters[0], filters[0], 3, padding=1)
         self.blocks = nn.ModuleList([])
