@@ -169,6 +169,7 @@ class Trainer():
         self.GAN_params = [args, kwargs]
         self.GAN = None
         self.gpu = kwargs['gpu']
+        torch.manual_seed(self.gpu)
 
         self.name = name
         self.results_dir = Path(results_dir)
@@ -345,7 +346,7 @@ class Trainer():
 
             generated_images = self.GAN.G(styles, img_noise)
             fake_output, fake_q_loss = self.GAN.D_aug(generated_images.clone().detach(), detach=True,
-                                                      prob=aug_prob, feature_vector=feature_vector_batch)
+                                                      prob=aug_prob, feature_vector=feature_vector_batch.cuda())
 
             image_batch, feature_vector_batch = next(self.loader)
             image_batch.requires_grad_()

@@ -368,7 +368,7 @@ class Discriminator(nn.Module):
         return nn.Sequential(*layers)
 
 
-    def make_to_logit(self, latent_dim, depth=8):
+    def make_to_logit(self, latent_dim, depth=1):
         layers = []
         for i in range(depth):
           layers.append(nn.Linear(latent_dim, latent_dim))

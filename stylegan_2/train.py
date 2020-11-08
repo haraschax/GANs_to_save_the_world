@@ -31,7 +31,7 @@ def train_from_folder(
     network_capacity=16,
     transparent=False,
     batch_size=4,
-    gradient_accumulate_every=3,
+    gradient_accumulate_every=8,
     num_train_steps=150000,
     learning_rate=1e-4,
     lr_mlp=0.1,
