@@ -91,17 +91,14 @@ class StyleVectorizer(nn.Module):
     def make_feature_mixer(self, latent_dim):
         layers = []
         layers.append(nn.Linear(latent_dim + 1024, latent_dim))
-        layers.append(nn.ReLU())
-        layers.append(nn.Linear(latent_dim, latent_dim))
-        layers.append(nn.ReLU())
         return nn.Sequential(*layers)
 
     def forward(self, x, feats=None):
+        x = F.normalize(x, dim=1)
         if self.use_feats:
           assert feats is not None
           x = torch.cat([x, feats], dim=1)
           x = self.mixer(x)
-        x = F.normalize(x, dim=1)
         x = self.net(x)
         return x
 
@@ -237,7 +234,6 @@ class Generator(nn.Module):
         filters = [init_channels, *filters]
 
         in_out_pairs = zip(filters[:-1], filters[1:])
-        self.no_const = no_const
 
         self.initial_block = nn.Parameter(torch.randn((1, init_channels, 4, 4)))
 
@@ -341,14 +337,21 @@ class Discriminator(nn.Module):
 
         self.final_conv = nn.Conv2d(chan_last, chan_last, 3, padding=1)
         self.flatten = Flatten()
+        self.bottle = self.make_bottle(latent_dim)
+        self.classifier = self.make_classifier(latent_dim)
         if use_feats:
           self.feature_mixer = self.make_feature_mixer(latent_dim)
         self.to_logit = self.make_to_logit(latent_dim)
 
+    def make_bottle(self, latent_dim):
+        layers = []
+        layers.append(nn.Linear(latent_dim*4, latent_dim))
+        layers.append(nn.ReLU())
+        return nn.Sequential(*layers)
+
+
     def make_classifier(self, latent_dim):
         layers = []
-        layers.append(nn.Linear(latent_dim, latent_dim))
-        layers.append(nn.ReLU())
         layers.append(minibatch_std_concat_layer(averaging='all'))
         layers.append(nn.Linear(latent_dim + 1, latent_dim))
         layers.append(nn.ReLU())
@@ -357,14 +360,12 @@ class Discriminator(nn.Module):
 
     def make_feature_mixer(self, latent_dim):
         layers = []
-        layers.append(nn.Linear(latent_dim*4 + 1024, latent_dim))
-        layers.append(nn.ReLU())
-        layers.append(nn.Linear(latent_dim, latent_dim))
+        layers.append(nn.Linear(latent_dim + 1024, latent_dim))
         layers.append(nn.ReLU())
         return nn.Sequential(*layers)
 
 
-    def make_to_logit(self, latent_dim, depth=1):
+    def make_to_logit(self, latent_dim, depth=4):
         layers = []
         for i in range(depth):
           layers.append(nn.Linear(latent_dim, latent_dim))
@@ -389,6 +390,8 @@ class Discriminator(nn.Module):
                 quantize_loss += loss
         x = self.final_conv(x)
         y = self.flatten(x)
+        y = self.bottle(y)
+        y = self.classifier(y)
 
         if self.use_feats:
           assert feature_vector is not None

@@ -86,7 +86,7 @@ def loss_backwards(fp16, loss, optimizer, loss_id, **kwargs):
     #else:
     loss.backward(**kwargs)
 
-def gradient_penalty(images, output, weight=.1):
+def gradient_penalty(images, output, weight=10.):
     batch_size = images.shape[0]
     gradients = torch_grad(outputs=output, inputs=images,
                            grad_outputs=torch.ones(output.size()).cuda(),
