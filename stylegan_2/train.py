@@ -25,7 +25,7 @@ def train_from_folder(
     results_dir='./results',
     models_dir='./models', 
     name='default',
-    new=True,
+    new=False,
     load_from=-1,
     image_size=512,
     network_capacity=16,
