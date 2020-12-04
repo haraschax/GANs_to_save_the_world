@@ -212,6 +212,7 @@ class Trainer():
         self.d_loss = 0
         self.g_loss = 0
         self.last_gp_loss = 0
+        self.dropout_loss = 0
         self.last_cr_loss = 0
         self.q_loss = 0
 
@@ -268,9 +269,10 @@ class Trainer():
         ext = 'jpg' if not self.transparent else 'png'
         torchvision.utils.save_image(self.test_image_batch, str(self.results_dir / self.name / f'test_img.{ext}'), nrow=8)
 
-    def gen_styles(self, model, feats):
+    def gen_styles(self, model, feats, n=None):
       layers = self.GAN.num_layers
-      n = noise(self.batch_size, self.GAN.latent_dim)
+      if n is None:
+        n = noise(self.batch_size, self.GAN.latent_dim)
       w_space = self.GAN.S(n, feats)
       styles = w_space[:,None,:].repeat(1,layers,1)
       return styles
@@ -307,9 +309,11 @@ class Trainer():
 
         apply_gradient_penalty = self.steps % 4 == 0
         apply_path_penalty = False  # self.steps % 32 == 0
+        apply_dropout_hack = False #self.steps % 4 == 2
         apply_cl_reg_to_generated = self.steps > 20000
 
         backwards = partial(loss_backwards, self.fp16)
+        self.dropout = nn.Dropout(p=0.5)
 
 
         if self.GAN.D_cl is not None:
@@ -341,16 +345,16 @@ class Trainer():
         for i in range(self.gradient_accumulate_every):
             image_batch, feature_vector_batch = next(self.loader)
 
-            styles = self.gen_mixed_styles(self.GAN.S, feature_vector_batch.cuda())
+            styles = self.gen_mixed_styles(self.GAN.S, self.dropout(feature_vector_batch.cuda()))
             img_noise = image_noise(batch_size, image_size)
 
             generated_images = self.GAN.G(styles, img_noise)
             fake_output, fake_q_loss = self.GAN.D_aug(generated_images.clone().detach(), detach=True,
-                                                      prob=aug_prob, feature_vector=feature_vector_batch.cuda())
+                                                      prob=aug_prob, feature_vector=self.dropout(feature_vector_batch.cuda()))
 
             image_batch, feature_vector_batch = next(self.loader)
             image_batch.requires_grad_()
-            real_output, real_q_loss = self.GAN.D_aug(image_batch.cuda(), prob=aug_prob, feature_vector=feature_vector_batch.cuda())
+            real_output, real_q_loss = self.GAN.D_aug(image_batch.cuda(), prob=aug_prob, feature_vector=self.dropout(feature_vector_batch.cuda()))
 
             divergence = (F.relu(1 + real_output) + F.relu(1 - fake_output)).mean()
             disc_loss = divergence
@@ -377,11 +381,11 @@ class Trainer():
         for i in range(self.gradient_accumulate_every):
             image_batch, feature_vector_batch = next(self.loader)
 
-            styles = self.gen_mixed_styles(self.GAN.S, feature_vector_batch.cuda())
+            styles = self.gen_mixed_styles(self.GAN.S, self.dropout(feature_vector_batch.cuda()))
             img_noise = image_noise(batch_size, image_size)
 
             generated_images = self.GAN.G(styles, img_noise)
-            fake_output, _ = self.GAN.D_aug(generated_images, prob=aug_prob, feature_vector=feature_vector_batch.cuda())
+            fake_output, _ = self.GAN.D_aug(generated_images, prob=aug_prob, feature_vector=self.dropout(feature_vector_batch.cuda()))
             loss = fake_output.mean()
             gen_loss = loss
 
@@ -393,6 +397,12 @@ class Trainer():
                     pl_loss = ((pl_lengths - self.pl_mean) ** 2).mean()
                     if not torch.isnan(pl_loss):
                         gen_loss = gen_loss + pl_loss
+            if apply_dropout_hack:
+              n = noise(self.batch_size, self.GAN.latent_dim)
+              styles1 = self.gen_styles(self.GAN.S, self.dropout(feature_vector_batch.cuda()), n=n)
+              styles2 = self.gen_styles(self.GAN.S, self.dropout(feature_vector_batch.cuda()), n=n)
+              self.dropout_loss = nn.L1Loss()(self.GAN.G(styles2, img_noise), self.GAN.G(styles1, img_noise))
+              gen_loss += self.dropout_loss
 
             gen_loss = gen_loss / self.gradient_accumulate_every
             gen_loss.register_hook(raise_if_nan)
@@ -497,8 +507,7 @@ class Trainer():
                 frame.save(str(folder_path / f'{str(ind)}.{ext}'))
 
     def print_log(self):
-        pl_mean = default(self.pl_mean, 0)
-        print(f'G: {self.g_loss:.2f} | D: {self.d_loss:.2f} | GP: {self.last_gp_loss:.2f} | PL: {pl_mean:.2f} | CR: {self.last_cr_loss:.2f} | Q: {self.q_loss:.2f}')
+        print(f'G: {self.g_loss:.2f} | D: {self.d_loss:.2f} | GP: {self.last_gp_loss:.2f} | DL: {self.dropout_loss:.2f} | CR: {self.last_cr_loss:.2f} | Q: {self.q_loss:.2f}')
 
     def model_name(self, num):
         return str(self.models_dir / self.name / f'model_{num}.pt')

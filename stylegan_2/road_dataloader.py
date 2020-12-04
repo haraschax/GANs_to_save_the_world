@@ -110,7 +110,7 @@ def q_loader(i, q, image_size, aug_prob, transparent=False):
 
 class Dataset(data.Dataset):
     def __init__(self, folder, image_size, transparent=False,
-                 aug_prob=0., max_zoom=8, size=1000000, workers=12):
+                 aug_prob=0., max_zoom=8, size=1000000, workers=3):
         super().__init__()
         self.size = size
         self.samples = np.random.uniform(0.0, 1.0, size=(self.size, 3))
